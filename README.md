@@ -2,6 +2,11 @@
 
 TouchpadFlow is a low-latency touchpad gesture daemon written in Rust for Linux and KDE Plasma 6 (Wayland). It intercepts physical multitouch events directly from `/dev/input/event*`, routes edge slide gestures to hardware volume and display brightness controls, passes normal pointer and scrolling motions through a virtual UInput device, and executes 3- and 4-finger window/media gestures.
 
+## Platforms
+
+- **Linux (Rust Daemon):** High-performance Rust daemon for KDE Plasma 6, Hyprland, Sway, and GNOME utilizing `evdev`, `uinput`, `wpctl`, and `brightnessctl`. See instructions below.
+- **Windows (PTP Tool):** Portable tray utility in `windows/` inspired by Wintego's SurfaceEdge architecture, using Windows Precision Touchpad HID Raw Input, Core Audio, WMI, and native Windows 11 OSD flyouts. See [windows/README.md](windows/README.md).
+
 ## Gesture Layout
 
 ```
