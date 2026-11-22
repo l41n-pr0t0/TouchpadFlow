@@ -5,6 +5,7 @@ mod error;
 mod gesture;
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use gesture::GestureEngine;
 
 #[derive(Parser, Debug)]
 #[command(name = "touchpadflow")]
-#[command(about = "Touchpad gesture daemon with two-finger edge volume and brightness controls")]
+#[command(about = "Universal Linux touchpad gesture daemon with two-finger edge volume and brightness controls")]
 struct Cli {
     #[arg(short, long, help = "Path to the touchpad evdev device (e.g. /dev/input/event9)")]
     device: Option<PathBuf>,
@@ -32,12 +33,33 @@ struct Cli {
 
     #[arg(long, help = "Monitor events without grabbing or filtering")]
     monitor: bool,
+
+    #[arg(long, help = "Run in background as a daemon (portable across non-systemd distros like Alpine/Void/Gentoo)")]
+    daemon: bool,
 }
 
 fn main() -> Result<()> {
     let args = Cli::parse();
-    let grab_mode = args.grab && !args.monitor;
 
+    if args.daemon {
+        // Fork/spawn background child process if --daemon passed
+        let current_exe = std::env::current_exe().map_err(AppError::Io)?;
+        let mut child_cmd = Command::new(current_exe);
+        if let Some(ref d) = args.device {
+            child_cmd.arg("-d").arg(d);
+        }
+        if let Some(ref c) = args.config {
+            child_cmd.arg("-c").arg(c);
+        }
+        if !args.grab {
+            child_cmd.arg("--grab=false");
+        }
+        let child = child_cmd.spawn().map_err(AppError::Io)?;
+        println!("TouchpadFlow daemon spawned in background with PID: {}", child.id());
+        return Ok(());
+    }
+
+    let grab_mode = args.grab && !args.monitor;
     let cfg = AppConfig::load_or_default(args.config.as_deref());
 
     let dev_path = match args.device {
@@ -64,9 +86,9 @@ fn main() -> Result<()> {
 
     let (volume, vol_worker) = VolumeController::new();
     let (brightness, bright_worker) = BrightnessController::new();
-    if let Some(dev) = brightness.device_name() {
-        println!("Display backlight device: {}", dev);
-    }
+
+    println!("Audio backend: {:?}", volume.backend());
+    println!("Brightness backend: {}", brightness.backend_description());
 
     let output = VirtualOutput::new(&dev, grab_mode)?;
 
