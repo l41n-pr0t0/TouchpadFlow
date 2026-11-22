@@ -1,0 +1,36 @@
+[package]
+name = "touchpadflow"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Multi-finger touchpad gesture daemon for Linux and KDE Plasma 6 with two-finger edge volume and brightness sliders"
+license = "Apache-2.0"
+repository = "https://github.com/l41n-pr0t0/TouchpadFlow"
+readme = "README.md"
+keywords = ["touchpad", "gestures", "kde", "wayland", "evdev"]
+categories = ["command-line-utilities", "os::linux-apis"]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+evdev = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.3"
+thiserror = "2"
+
+[dev-dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
