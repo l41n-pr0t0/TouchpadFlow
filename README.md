@@ -66,13 +66,53 @@ Multi-finger contacts stagger physically over 10–30 ms scan intervals. Touchpa
 ### 4. Asynchronous Controller Workers
 Subprocess calls to system utilities (`wpctl`, `brightnessctl`, `qdbus`) run on dedicated worker threads with condition variables. Changes are coalesced over 25 ms intervals so hardware event processing never blocks.
 
+## Security & Least-Privilege Architecture
+
+TouchpadFlow strictly adheres to the principle of least privilege across all supported platforms. The daemon **never runs as root or administrator**.
+
+### 1. Linux Permissions & Sandboxing
+- **Active Session Device Permissions (`uaccess`):** Instead of adding the user to the broad `input` group—which grants unconstrained read access to all system keyboards and creates a major security hazard—TouchpadFlow uses a dedicated udev rule (`udev/70-touchpadflow.rules`). This rule tags physical touchpads and `/dev/uinput` with `TAG+="uaccess"`, granting access dynamically only to the currently active graphical seat via `systemd-logind`.
+- **Systemd Sandboxing:** The provided systemd user unit enforces strict sandboxing:
+  - `NoNewPrivileges=yes`: Disallows privilege escalation.
+  - `IPAddressDeny=any`: Blocks all outbound and inbound network sockets.
+  - `DevicePolicy=closed` & `DeviceAllow`: Restricts hardware access exclusively to `/dev/uinput` and character input devices.
+  - `ProtectSystem=strict` & `ProtectHome=read-only`: Hardens the filesystem.
+- **Rootless Helper Fallback:** Non-systemd distributions (Alpine, Void, Gentoo) can run `touchpadflow --daemon` under the user session without root.
+
+### 2. Windows & macOS Least Privilege
+- **Windows:** Runs completely in user space without requiring administrator rights or third-party kernel drivers. Communicates with touchpads using standard Precision Touchpad (PTP) HID Raw Input.
+- **macOS:** Interacts cleanly through Apple's native `MultitouchSupport` API, operating under standard user permissions with explicit macOS Input Monitoring access.
+
+---
+
+## Input Privacy
+
+- **No Keyboard Capture:** TouchpadFlow binds exclusively to absolute multitouch coordinate axes (`ABS_MT_POSITION_X/Y`). It does not capture, read, or intercept keyboard strokes.
+- **Zero Movement Storage:** Touch coordinates are evaluated purely in ephemeral stack memory for edge detection and delta accumulation. No trace histories or raw events are saved to disk or persistent storage.
+- **Zero Network Transmission:** The core engine does not establish internet connections or upload telemetry. Complete network isolation is guaranteed at both application and systemd container levels.
+- **Ephemeral Processing:** Coordinates and contact states are discarded immediately upon finger release (`ABS_MT_TRACKING_ID == -1`).
+
+---
+
+## Fault Tolerance & Crash Recovery
+
+Input daemon failures must never compromise the user's primary pointer device. TouchpadFlow provides comprehensive fault tolerance:
+
+1. **RAII Device Grab (`GrabGuard`):** Physical touchpad exclusivity is managed by an RAII guard. When the daemon terminates, drops out of scope, or encounters an interrupt (`SIGINT`, `SIGTERM`), the hardware grab is released immediately.
+2. **Panic Hook Restoration:** A global `std::panic::set_hook` intercepts unexpected panics, immediately ungrabbing the device and restoring native hardware control before unwinding.
+3. **Hot-Plug & Disconnect Tolerance:** Touchpad disconnections (`ENODEV`, device unplug) are caught gracefully. The engine flushes virtual slots, releases virtual state, and enters an automatic reconnect loop until the device returns.
+4. **Stuck Contact Watchdog:** A 400ms idle watchdog timer audits multi-finger slots. If an incomplete release sequence occurs at the hardware level, the watchdog cancels orphaned contact states.
+5. **Emergency Disable Mechanism:** Run `touchpadflow --toggle` or send `SIGUSR1` to immediately pause gesture processing and release the hardware grab, without killing the background service.
+
+---
+
 ## Prerequisites
 
 - Rust toolchain (1.85+)
 - Linux with `uinput` kernel support
-- PipeWire (`wpctl`) for audio
-- `brightnessctl` for backlight control
-- User in the `input` group
+- Audio: PipeWire (`wpctl`), PulseAudio (`pactl`), or ALSA (`amixer`)
+- Backlight: `brightnessctl`, `light`, or direct sysfs backlight permissions
+- Graphical desktop: KDE Plasma 6, Hyprland, Sway, GNOME, or any Wayland/X11 environment
 
 ## Installation
 
@@ -82,19 +122,17 @@ cd TouchpadFlow
 ./install.sh
 ```
 
-Ensure permissions are active:
-```bash
-sudo usermod -aG input $USER
-echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee /etc/udev/rules.d/99-uinput.rules
-sudo udevadm control --reload-rules && sudo udevadm trigger
-```
+The installer compiles the release binary and installs the session-based uaccess udev rules and systemd service:
 
-Start the systemd user service:
 ```bash
+# Enable and start the sandboxed user service:
 systemctl --user enable --now touchpadflow.service
+
+# Or run in background on non-systemd distros:
+touchpadflow --daemon
 ```
 
-Inspect live output:
+Inspect live status:
 ```bash
 journalctl --user -u touchpadflow.service -f
 ```
@@ -109,6 +147,10 @@ Options:
   -c, --config <CONFIG>  Path to JSON configuration file
       --grab             Exclusively grab the physical touchpad device [default: true]
       --monitor          Monitor events without grabbing or filtering
+      --daemon           Run in background as a daemon (portable across non-systemd distros)
+      --gui              Launch the interactive TouchpadFlow Control Center GUI
+      --port <PORT>      Port for the Control Center GUI [default: 8123]
+      --toggle           Emergency toggle: pauses or resumes the running daemon
   -h, --help             Print help
 ```
 

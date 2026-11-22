@@ -7,7 +7,28 @@ PartOf=graphical-session.target
 Type=simple
 ExecStart=%h/.local/bin/touchpadflow
 Restart=on-failure
-RestartSec=3
+RestartSec=2
+
+# Security & Sandboxing (Least Privilege)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+
+# Strict Network Isolation (Input Privacy: never transmits data)
+IPAddressDeny=any
+
+# Hardware Device Restrictions (Touchpad & UInput only)
+DevicePolicy=closed
+DeviceAllow=/dev/uinput rw
+DeviceAllow=char-input rw
 
 [Install]
 WantedBy=graphical-session.target

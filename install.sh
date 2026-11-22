@@ -4,36 +4,48 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DEST="$HOME/.local/bin"
 SERVICE_DEST="$HOME/.config/systemd/user"
+RULES_DEST="/etc/udev/rules.d/70-touchpadflow.rules"
 
-echo "Building TouchpadFlow release binary..."
+echo "=== TouchpadFlow Installer (Least Privilege & Secure) ==="
+echo "Building release binary with Rust..."
 cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 
 mkdir -p "$BIN_DEST"
 cp "$SCRIPT_DIR/target/release/touchpadflow" "$BIN_DEST/touchpadflow"
-chmod +x "$BIN_DEST/touchpadflow"
-echo "Installed binary to $BIN_DEST/touchpadflow"
+chmod 755 "$BIN_DEST/touchpadflow"
+echo "[OK] Installed binary to $BIN_DEST/touchpadflow"
 
-mkdir -p "$SERVICE_DEST"
-cp "$SCRIPT_DIR/systemd/touchpadflow.service" "$SERVICE_DEST/touchpadflow.service"
-echo "Installed systemd unit to $SERVICE_DEST/touchpadflow.service"
-
-systemctl --user daemon-reload
-
-echo ""
-echo "Permission check:"
-if ! groups | grep -q '\binput\b'; then
-    echo "  [!] User '$USER' is not in the 'input' group."
-    echo "      Run: sudo usermod -aG input $USER"
-    echo "      Then log out and log back in."
+# Install udev rule for session-based uaccess (avoids broad 'input' group security hazard)
+if [ -d "/etc/udev/rules.d" ]; then
+    echo ""
+    echo "Configuring session-based device permissions (uaccess)..."
+    if [ "$EUID" -eq 0 ]; then
+        cp "$SCRIPT_DIR/udev/70-touchpadflow.rules" "$RULES_DEST"
+        udevadm control --reload-rules && udevadm trigger
+        echo "[OK] Installed $RULES_DEST"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo cp "$SCRIPT_DIR/udev/70-touchpadflow.rules" "$RULES_DEST"
+        sudo udevadm control --reload-rules && sudo udevadm trigger
+        echo "[OK] Installed $RULES_DEST via sudo"
+    else
+        echo "[!] To enable access without adding your user to the broad 'input' group, copy:"
+        echo "    sudo cp $SCRIPT_DIR/udev/70-touchpadflow.rules $RULES_DEST"
+        echo "    sudo udevadm control --reload-rules && sudo udevadm trigger"
+    fi
 fi
 
-if [ ! -f /etc/udev/rules.d/99-uinput.rules ]; then
-    echo "  [!] Missing /etc/udev/rules.d/99-uinput.rules."
-    echo "      Create it with:"
-    echo '      echo '"'"'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"'"'"' | sudo tee /etc/udev/rules.d/99-uinput.rules'
-    echo "      sudo udevadm control --reload-rules && sudo udevadm trigger"
+# Install systemd user service if systemd is available
+if command -v systemctl >/dev/null 2>&1; then
+    mkdir -p "$SERVICE_DEST"
+    cp "$SCRIPT_DIR/systemd/touchpadflow.service" "$SERVICE_DEST/touchpadflow.service"
+    systemctl --user daemon-reload
+    echo "[OK] Registered sandboxed systemd user service: $SERVICE_DEST/touchpadflow.service"
 fi
 
 echo ""
-echo "Setup complete. Start TouchpadFlow with:"
+echo "=== Installation complete ==="
+echo "Start daemon with systemd:"
 echo "  systemctl --user enable --now touchpadflow.service"
+echo ""
+echo "Or run standalone in background (non-systemd distros):"
+echo "  touchpadflow --daemon"

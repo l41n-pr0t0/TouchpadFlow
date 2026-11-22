@@ -1,0 +1,9 @@
+# TouchpadFlow - Active session device permissions via systemd-logind
+# Avoids adding the user to the broad 'input' group (which exposes keyboards).
+# Only grants read/write access to touchpads and uinput for the active local seat.
+
+# Virtual device creation for gesture injection and pointer cloning
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"
+
+# Physical touchpad access restricted strictly to touchpad devices (no keyboards)
+SUBSYSTEM=="input", ENV{ID_INPUT_TOUCHPAD}=="1", TAG+="uaccess"

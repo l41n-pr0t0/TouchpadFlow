@@ -194,6 +194,90 @@ impl VirtualOutput {
     }
 }
 
+/// RAII Guard for device exclusive grab.
+/// Owns the Device by value and guarantees that the physical device is ungrabbed
+/// and returned to the OS if the daemon exits, drops the guard, or encounters an unwind.
+pub struct GrabGuard {
+    device: Option<Device>,
+    active: bool,
+}
+
+impl GrabGuard {
+    pub fn new(mut device: Device) -> std::io::Result<Self> {
+        device.grab()?;
+        Ok(Self {
+            device: Some(device),
+            active: true,
+        })
+    }
+
+    pub fn ungrab(&mut self) {
+        if self.active {
+            if let Some(dev) = &mut self.device {
+                let _ = dev.ungrab();
+            }
+            self.active = false;
+        }
+    }
+
+    pub fn regrab(&mut self) -> std::io::Result<()> {
+        if !self.active {
+            if let Some(dev) = &mut self.device {
+                dev.grab()?;
+                self.active = true;
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn device_mut(&mut self) -> &mut Device {
+        self.device.as_mut().expect("Device present in GrabGuard")
+    }
+
+    #[allow(dead_code)]
+    pub fn into_inner(mut self) -> Device {
+        self.ungrab();
+        self.device.take().expect("Device present in GrabGuard")
+    }
+}
+
+impl Drop for GrabGuard {
+    fn drop(&mut self) {
+        self.ungrab();
+    }
+}
+
+pub enum ActiveDevice {
+    Grabbed(GrabGuard),
+    Ungrabbed(Device),
+}
+
+impl ActiveDevice {
+    pub fn device_mut(&mut self) -> &mut Device {
+        match self {
+            ActiveDevice::Grabbed(g) => g.device_mut(),
+            ActiveDevice::Ungrabbed(d) => d,
+        }
+    }
+
+    pub fn pause(&mut self) {
+        if let ActiveDevice::Grabbed(g) = self {
+            g.ungrab();
+        }
+    }
+
+    pub fn resume(&mut self) {
+        if let ActiveDevice::Grabbed(g) = self {
+            let _ = g.regrab();
+        }
+    }
+}
+
 #[must_use]
 pub fn find_touchpad() -> Option<PathBuf> {
     let entries = fs::read_dir("/dev/input").ok()?;

@@ -50,6 +50,7 @@ pub struct GestureEngine {
     volume: VolumeController,
     brightness: BrightnessController,
     output: VirtualOutput,
+    last_event_time: Instant,
 }
 
 impl GestureEngine {
@@ -83,7 +84,34 @@ impl GestureEngine {
             volume,
             brightness,
             output,
+            last_event_time: Instant::now(),
         }
+    }
+
+    /// Watchdog to prevent stuck contacts if hardware scan drops a release frame
+    pub fn check_watchdog(&mut self) -> Result<()> {
+        if self.prev_finger_count > 0 && self.last_event_time.elapsed() > Duration::from_millis(400) {
+            self.emergency_reset()?;
+        }
+        Ok(())
+    }
+
+    /// Emergency release of all virtual slots and reset to transparent pass-through
+    pub fn emergency_reset(&mut self) -> Result<()> {
+        let active_ids: Vec<usize> = self.slots.keys().copied().collect();
+        if !active_ids.is_empty() {
+            self.output.release_all_slots(&active_ids)?;
+        }
+        self.slots.clear();
+        self.buffer.clear();
+        self.session_mode = SessionMode::Pointer;
+        self.prev_finger_count = 0;
+        self.settle_peak = 0;
+        self.last_avg_x = None;
+        self.last_avg_y = None;
+        self.start_avg_x = None;
+        self.start_avg_y = None;
+        Ok(())
     }
 
     pub fn handle_event(&mut self, ev: InputEvent) -> Result<()> {
@@ -132,6 +160,7 @@ impl GestureEngine {
     }
 
     fn process_frame(&mut self) -> Result<()> {
+        self.last_event_time = Instant::now();
         let active_slots: Vec<(usize, SlotData)> = self
             .slots
             .iter()

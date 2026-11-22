@@ -6,6 +6,7 @@ pub enum AppError {
     #[error("i/o error: {0}")]
     Io(#[from] io::Error),
 
+    #[allow(dead_code)]
     #[error("failed to open device at '{path}': {source}")]
     DeviceOpen {
         path: String,
@@ -24,6 +25,7 @@ pub enum AppError {
     #[error("configuration error: {0}")]
     Config(String),
 
+    #[allow(dead_code)]
     #[error("no suitable multitouch touchpad found")]
     DeviceNotFound,
 }
