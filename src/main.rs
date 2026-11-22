@@ -3,6 +3,8 @@ mod config;
 mod device;
 mod error;
 mod gesture;
+mod gui;
+mod gui_assets;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -36,10 +38,20 @@ struct Cli {
 
     #[arg(long, help = "Run in background as a daemon (portable across non-systemd distros like Alpine/Void/Gentoo)")]
     daemon: bool,
+
+    #[arg(long, help = "Launch the interactive TouchpadFlow Control Center GUI")]
+    gui: bool,
+
+    #[arg(long, default_value_t = 8123, help = "Port for the Control Center GUI")]
+    port: u16,
 }
 
 fn main() -> Result<()> {
     let args = Cli::parse();
+
+    if args.gui {
+        return gui::start_gui_server(args.port);
+    }
 
     if args.daemon {
         // Fork/spawn background child process if --daemon passed

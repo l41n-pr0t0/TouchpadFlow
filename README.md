@@ -5,7 +5,26 @@ TouchpadFlow is a low-latency touchpad gesture daemon written in Rust for Linux 
 ## Platforms
 
 - **Linux (Rust Daemon):** High-performance Rust daemon for KDE Plasma 6, Hyprland, Sway, and GNOME utilizing `evdev`, `uinput`, `wpctl`, and `brightnessctl`. See instructions below.
+- **macOS (Rust Daemon):** Native Apple Silicon / Intel daemon in `macos/` written in pure Rust, interfacing with Apple's `MultitouchSupport` framework. See [macos/README.md](macos/README.md).
 - **Windows (PTP Tool):** Portable tray utility in `windows/` inspired by Wintego's SurfaceEdge architecture, using Windows Precision Touchpad HID Raw Input, Core Audio, WMI, and native Windows 11 OSD flyouts. See [windows/README.md](windows/README.md).
+
+## TouchpadFlow Control Center (GUI)
+
+TouchpadFlow includes a built-in interactive Control Center. Launch it with:
+
+```bash
+touchpadflow --gui
+```
+
+| Feature | Purpose |
+| :--- | :--- |
+| **Gesture editor** | Interactive sliders to configure left and right edge boundaries (5% to 35%) |
+| **Sensitivity** | Adjust volume/brightness step scaling, velocity multipliers, and contact settling |
+| **Live preview** | Visualise real-time multi-finger movement and touch coordinates on a canvas |
+| **Action mapping** | Assign volume, brightness, media keys, or custom shortcuts to edges & gestures |
+| **Device profiles** | Save, load, and switch between profiles (e.g. Ultra-Responsive, Wide Edges) |
+| **Gesture testing** | Live test bench with interactive gauges to test gestures without altering hardware |
+| **Service status** | Live engine status indicator with Start, Stop, and Restart controls |
 
 ## Gesture Layout
 
