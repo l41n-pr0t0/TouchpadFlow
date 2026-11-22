@@ -64,6 +64,9 @@ fn main() -> Result<()> {
 
     let (volume, vol_worker) = VolumeController::new();
     let (brightness, bright_worker) = BrightnessController::new();
+    if let Some(dev) = brightness.device_name() {
+        println!("Display backlight device: {}", dev);
+    }
 
     let output = VirtualOutput::new(&dev, grab_mode)?;
 
