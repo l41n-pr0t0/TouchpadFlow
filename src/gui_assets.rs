@@ -458,6 +458,65 @@ function handleMove(e) {
   }
 }
 
+async function loadConfig() {
+  try {
+    const res = await fetch('/api/config', {
+      headers: { 'X-Session-Token': window.SESSION_TOKEN || '' }
+    });
+    if (res.ok) {
+      const cfg = await res.json();
+      if (cfg.left_edge_ratio) document.getElementById('leftEdgeInput').value = Math.round(cfg.left_edge_ratio * 100);
+      if (cfg.right_edge_ratio) document.getElementById('rightEdgeInput').value = Math.round(cfg.right_edge_ratio * 100);
+      if (cfg.edge_trigger_threshold) document.getElementById('triggerInput').value = cfg.edge_trigger_threshold;
+      if (cfg.volume_step) document.getElementById('volStepInput').value = cfg.volume_step;
+      if (cfg.brightness_step) document.getElementById('brightStepInput').value = cfg.brightness_step;
+      if (cfg.settle_window_ms) document.getElementById('settleInput').value = cfg.settle_window_ms;
+
+      if (cfg.shortcuts) {
+        if (cfg.shortcuts['three_finger_tap'] && document.getElementById('actTap3')) {
+          document.getElementById('actTap3').value = cfg.shortcuts['three_finger_tap'];
+        }
+        if (cfg.shortcuts['swipe4_up'] && document.getElementById('actSwipe4Up')) {
+          document.getElementById('actSwipe4Up').value = cfg.shortcuts['swipe4_up'];
+        }
+      }
+      updateDisplay();
+    }
+  } catch (err) {
+    console.error('Failed loading initial config', err);
+  }
+}
+
+async function checkStatus() {
+  try {
+    const res = await fetch('/api/status', {
+      headers: { 'X-Session-Token': window.SESSION_TOKEN || '' }
+    });
+    if (res.ok) {
+      const st = await res.json();
+      const dot = document.getElementById('statusDot');
+      const text = document.getElementById('statusText');
+      if (st.running) {
+        if (st.paused) {
+          dot.style.background = '#eab308';
+          text.innerText = 'Daemon Paused (Grab Released)';
+        } else {
+          dot.style.background = '#10b981';
+          text.innerText = 'Active & Grabbed (' + (st.device || 'Touchpad') + ')';
+        }
+      } else {
+        dot.style.background = '#ef4444';
+        text.innerText = 'Daemon Offline';
+      }
+    }
+  } catch (err) {
+    const dot = document.getElementById('statusDot');
+    const text = document.getElementById('statusText');
+    if (dot) dot.style.background = '#ef4444';
+    if (text) text.innerText = 'Daemon Offline';
+  }
+}
+
 async function saveConfig() {
   const cfg = {
     left_edge_ratio: document.getElementById('leftEdgeInput').value / 100.0,
@@ -465,27 +524,46 @@ async function saveConfig() {
     edge_trigger_threshold: parseFloat(document.getElementById('triggerInput').value),
     volume_step: parseFloat(document.getElementById('volStepInput').value),
     brightness_step: parseFloat(document.getElementById('brightStepInput').value),
-    settle_window_ms: parseInt(document.getElementById('settleInput').value)
+    settle_window_ms: parseInt(document.getElementById('settleInput').value),
+    shortcuts: {}
   };
+
+  const tap3 = document.getElementById('actTap3');
+  if (tap3) cfg.shortcuts['three_finger_tap'] = tap3.value;
+  const s4u = document.getElementById('actSwipe4Up');
+  if (s4u) cfg.shortcuts['swipe4_up'] = s4u.value;
+
   try {
     const res = await fetch('/api/config', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Session-Token': window.SESSION_TOKEN || ''
+      },
       body: JSON.stringify(cfg)
     });
-    if (res.ok) alert('Settings saved and applied to active daemon.');
+    if (res.ok) {
+      alert('Settings saved and live-reloaded into active daemon.');
+      checkStatus();
+    } else {
+      alert('Failed to save settings: server returned ' + res.status);
+    }
   } catch (err) {
-    alert('Config saved locally.');
+    alert('Network error while saving settings.');
   }
 }
 
 async function manageService(action) {
   try {
-    const res = await fetch('/api/service/' + action, { method: 'POST' });
+    const res = await fetch('/api/service/' + action, {
+      method: 'POST',
+      headers: { 'X-Session-Token': window.SESSION_TOKEN || '' }
+    });
     const data = await res.json();
-    alert('Service ' + action + ': ' + (data.status || 'OK'));
+    alert('Action "' + action + '": ' + (data.status || 'Dispatched'));
+    setTimeout(checkStatus, 500);
   } catch (err) {
-    alert('Action dispatched: ' + action);
+    alert('Failed to dispatch action: ' + action);
   }
 }
 
@@ -507,6 +585,7 @@ function switchProfile(name) {
     document.getElementById('volStepInput').value = 0.04;
     document.getElementById('brightStepInput').value = 0.04;
     document.getElementById('settleInput').value = 15;
+    document.getElementById('triggerInput').value = 15;
   } else {
     resetDefaults();
   }
@@ -514,11 +593,22 @@ function switchProfile(name) {
 }
 
 function saveProfilePrompt() {
-  const name = prompt('Enter profile name:');
+  const name = prompt('Enter custom profile name:');
   if (name) {
-    alert('Profile "' + name + '" saved.');
+    const sel = document.getElementById('profileSelect');
+    const opt = document.createElement('option');
+    opt.value = name.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    opt.innerText = name;
+    opt.selected = true;
+    sel.appendChild(opt);
+    alert('Profile "' + name + '" saved locally to profile selector.');
   }
 }
+
+// Initial load
+loadConfig();
+checkStatus();
+setInterval(checkStatus, 3000);
 </script>
 
 </body>

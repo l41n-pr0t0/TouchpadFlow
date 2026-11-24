@@ -1,12 +1,13 @@
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use evdev::{AbsoluteAxisCode, EventType, InputEvent, KeyCode, SynchronizationCode};
 
-use crate::action::{execute_action, BrightnessController, VolumeController};
+use crate::action::{BrightnessController, VolumeController, execute_action};
 use crate::config::AppConfig;
 use crate::device::{TouchpadMetrics, VirtualOutput};
 use crate::error::Result;
+
+pub const MAX_SLOTS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionMode {
@@ -18,7 +19,7 @@ pub enum SessionMode {
     Gesture4,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct SlotData {
     pub active: bool,
     pub tracking_id: i32,
@@ -28,10 +29,23 @@ pub struct SlotData {
     pub current_y: Option<f64>,
 }
 
+impl Default for SlotData {
+    fn default() -> Self {
+        Self {
+            active: false,
+            tracking_id: -1,
+            start_x: None,
+            start_y: None,
+            current_x: None,
+            current_y: None,
+        }
+    }
+}
+
 pub struct GestureEngine {
     config: AppConfig,
     metrics: TouchpadMetrics,
-    slots: HashMap<usize, SlotData>,
+    slots: [SlotData; MAX_SLOTS],
     current_slot: usize,
     prev_finger_count: usize,
 
@@ -65,7 +79,7 @@ impl GestureEngine {
         Self {
             config,
             metrics,
-            slots: HashMap::with_capacity(10),
+            slots: [SlotData::default(); MAX_SLOTS],
             current_slot: 0,
             prev_finger_count: 0,
 
@@ -88,9 +102,20 @@ impl GestureEngine {
         }
     }
 
+    /// Dynamic live reload of configuration
+    pub fn update_config(&mut self, config: AppConfig) {
+        self.config = config;
+    }
+
+    #[must_use]
+    pub fn session_mode(&self) -> SessionMode {
+        self.session_mode
+    }
+
     /// Watchdog to prevent stuck contacts if hardware scan drops a release frame
     pub fn check_watchdog(&mut self) -> Result<()> {
-        if self.prev_finger_count > 0 && self.last_event_time.elapsed() > Duration::from_millis(400) {
+        if self.prev_finger_count > 0 && self.last_event_time.elapsed() > Duration::from_millis(400)
+        {
             self.emergency_reset()?;
         }
         Ok(())
@@ -98,11 +123,20 @@ impl GestureEngine {
 
     /// Emergency release of all virtual slots and reset to transparent pass-through
     pub fn emergency_reset(&mut self) -> Result<()> {
-        let active_ids: Vec<usize> = self.slots.keys().copied().collect();
-        if !active_ids.is_empty() {
-            self.output.release_all_slots(&active_ids)?;
+        let mut active_ids = [0usize; MAX_SLOTS];
+        let mut active_count = 0;
+        for (i, slot) in self.slots.iter().enumerate() {
+            if slot.active {
+                active_ids[active_count] = i;
+                active_count += 1;
+            }
         }
-        self.slots.clear();
+        if active_count > 0 {
+            self.output.release_all_slots(&active_ids[..active_count])?;
+        }
+        for slot in &mut self.slots {
+            *slot = SlotData::default();
+        }
         self.buffer.clear();
         self.session_mode = SessionMode::Pointer;
         self.prev_finger_count = 0;
@@ -125,30 +159,30 @@ impl GestureEngine {
 
             if code == AbsoluteAxisCode::ABS_MT_SLOT {
                 self.current_slot = val.max(0) as usize;
-            } else if code == AbsoluteAxisCode::ABS_MT_TRACKING_ID {
-                let slot = self.slots.entry(self.current_slot).or_default();
-                if val == -1 {
-                    slot.active = false;
-                } else {
-                    slot.active = true;
-                    slot.tracking_id = val;
-                    slot.start_x = None;
-                    slot.start_y = None;
-                    slot.current_x = None;
-                    slot.current_y = None;
+            } else if self.current_slot < MAX_SLOTS {
+                let slot = &mut self.slots[self.current_slot];
+                if code == AbsoluteAxisCode::ABS_MT_TRACKING_ID {
+                    if val == -1 {
+                        slot.active = false;
+                    } else {
+                        slot.active = true;
+                        slot.tracking_id = val;
+                        slot.start_x = None;
+                        slot.start_y = None;
+                        slot.current_x = None;
+                        slot.current_y = None;
+                    }
+                } else if code == AbsoluteAxisCode::ABS_MT_POSITION_X {
+                    if slot.start_x.is_none() {
+                        slot.start_x = Some(val as f64);
+                    }
+                    slot.current_x = Some(val as f64);
+                } else if code == AbsoluteAxisCode::ABS_MT_POSITION_Y {
+                    if slot.start_y.is_none() {
+                        slot.start_y = Some(val as f64);
+                    }
+                    slot.current_y = Some(val as f64);
                 }
-            } else if code == AbsoluteAxisCode::ABS_MT_POSITION_X {
-                let slot = self.slots.entry(self.current_slot).or_default();
-                if slot.start_x.is_none() {
-                    slot.start_x = Some(val as f64);
-                }
-                slot.current_x = Some(val as f64);
-            } else if code == AbsoluteAxisCode::ABS_MT_POSITION_Y {
-                let slot = self.slots.entry(self.current_slot).or_default();
-                if slot.start_y.is_none() {
-                    slot.start_y = Some(val as f64);
-                }
-                slot.current_y = Some(val as f64);
             }
         } else if ev.event_type() == EventType::SYNCHRONIZATION
             && ev.code() == SynchronizationCode::SYN_REPORT.0
@@ -161,27 +195,28 @@ impl GestureEngine {
 
     fn process_frame(&mut self) -> Result<()> {
         self.last_event_time = Instant::now();
-        let active_slots: Vec<(usize, SlotData)> = self
-            .slots
-            .iter()
-            .filter(|(_, s)| s.active)
-            .map(|(&i, s)| (i, s.clone()))
-            .collect();
-        let finger_count = active_slots.len();
+        let mut active_indices = [0usize; MAX_SLOTS];
+        let mut finger_count = 0;
+        for (i, slot) in self.slots.iter().enumerate() {
+            if slot.active {
+                active_indices[finger_count] = i;
+                finger_count += 1;
+            }
+        }
 
         if finger_count != self.prev_finger_count {
-            self.handle_finger_transition(finger_count, &active_slots)?;
+            self.handle_finger_transition(finger_count, &active_indices[..finger_count])?;
         }
 
         if self.session_mode == SessionMode::Settling {
             let elapsed = self.session_start_time.elapsed();
             if elapsed >= Duration::from_millis(self.config.settle_window_ms) {
-                self.resolve_settle(&active_slots)?;
+                self.resolve_settle(&active_indices[..finger_count])?;
             }
         }
 
         if finger_count > 0 {
-            self.track_motion(&active_slots)?;
+            self.track_motion(&active_indices[..finger_count])?;
         }
 
         self.handle_passthrough()?;
@@ -189,11 +224,7 @@ impl GestureEngine {
         Ok(())
     }
 
-    fn handle_finger_transition(
-        &mut self,
-        count: usize,
-        active_slots: &[(usize, SlotData)],
-    ) -> Result<()> {
+    fn handle_finger_transition(&mut self, count: usize, active_indices: &[usize]) -> Result<()> {
         if self.prev_finger_count == 0 && count > 0 {
             self.session_start_time = Instant::now();
             self.settle_peak = count;
@@ -205,7 +236,7 @@ impl GestureEngine {
             self.start_avg_y = None;
 
             if count == 2 {
-                self.check_two_finger_edge(active_slots);
+                self.check_two_finger_edge(active_indices);
             } else if count >= 3 {
                 self.session_mode = if count == 3 {
                     SessionMode::Gesture3
@@ -219,7 +250,7 @@ impl GestureEngine {
             self.settle_peak = count;
             if self.session_mode == SessionMode::Settling {
                 if count == 2 {
-                    self.check_two_finger_edge(active_slots);
+                    self.check_two_finger_edge(active_indices);
                 } else if count == 3 {
                     self.session_mode = SessionMode::Gesture3;
                 } else if count >= 4 {
@@ -235,45 +266,54 @@ impl GestureEngine {
         Ok(())
     }
 
-    fn check_two_finger_edge(&mut self, active_slots: &[(usize, SlotData)]) {
-        let valid_xs: Vec<f64> = active_slots.iter().filter_map(|(_, s)| s.current_x).collect();
-        if valid_xs.len() == 2 {
-            let left_r = self.config.left_edge_ratio;
-            let right_r = self.config.right_edge_ratio;
+    fn check_two_finger_edge(&mut self, active_indices: &[usize]) {
+        if active_indices.len() == 2 {
+            let slot0 = &self.slots[active_indices[0]];
+            let slot1 = &self.slots[active_indices[1]];
 
-            let both_left = valid_xs.iter().all(|&x| self.metrics.is_left_edge(x, left_r));
-            let both_right = valid_xs.iter().all(|&x| self.metrics.is_right_edge(x, right_r));
+            if let (Some(x0), Some(x1)) = (slot0.current_x, slot1.current_x) {
+                let left_r = self.config.left_edge_ratio;
+                let right_r = self.config.right_edge_ratio;
 
-            if both_left {
-                self.session_mode = SessionMode::EdgeBrightness;
-                self.buffer.clear();
-                return;
-            }
+                let avg_x = (x0 + x1) / 2.0;
 
-            if both_right {
-                self.session_mode = SessionMode::EdgeVolume;
-                self.buffer.clear();
-                return;
+                // Centroid edge detection with edge tolerance for natural finger width
+                let is_left = self.metrics.is_left_edge(avg_x, left_r)
+                    || self.metrics.is_left_edge(x0, left_r * 0.70)
+                    || self.metrics.is_left_edge(x1, left_r * 0.70);
+                let is_right = self.metrics.is_right_edge(avg_x, right_r)
+                    || self.metrics.is_right_edge(x0, right_r * 0.70)
+                    || self.metrics.is_right_edge(x1, right_r * 0.70);
+
+                if is_left {
+                    self.session_mode = SessionMode::EdgeBrightness;
+                    self.buffer.clear();
+                    return;
+                }
+
+                if is_right {
+                    self.session_mode = SessionMode::EdgeVolume;
+                    self.buffer.clear();
+                    return;
+                }
             }
         }
         self.session_mode = SessionMode::Pointer;
     }
 
-    fn resolve_settle(&mut self, active_slots: &[(usize, SlotData)]) -> Result<()> {
+    fn resolve_settle(&mut self, active_indices: &[usize]) -> Result<()> {
         if self.settle_peak >= 3 {
             self.session_mode = if self.settle_peak == 3 {
                 SessionMode::Gesture3
             } else {
                 SessionMode::Gesture4
             };
-            let ids: Vec<usize> = active_slots.iter().map(|(i, _)| *i).collect();
-            self.output.release_all_slots(&ids)?;
+            self.output.release_all_slots(active_indices)?;
             self.buffer.clear();
         } else if self.settle_peak == 2 {
-            self.check_two_finger_edge(active_slots);
+            self.check_two_finger_edge(active_indices);
             if self.session_mode != SessionMode::Pointer {
-                let ids: Vec<usize> = active_slots.iter().map(|(i, _)| *i).collect();
-                self.output.release_all_slots(&ids)?;
+                self.output.release_all_slots(active_indices)?;
                 self.buffer.clear();
             } else {
                 self.flush_buffer()?;
@@ -285,21 +325,26 @@ impl GestureEngine {
         Ok(())
     }
 
-    fn track_motion(&mut self, active_slots: &[(usize, SlotData)]) -> Result<()> {
-        let coords: Vec<(f64, f64)> = active_slots
-            .iter()
-            .filter_map(|(_, s)| match (s.current_x, s.current_y) {
-                (Some(x), Some(y)) => Some((x, y)),
-                _ => None,
-            })
-            .collect();
+    fn track_motion(&mut self, active_indices: &[usize]) -> Result<()> {
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut count = 0;
 
-        if coords.is_empty() {
+        for &idx in active_indices {
+            let slot = &self.slots[idx];
+            if let (Some(x), Some(y)) = (slot.current_x, slot.current_y) {
+                sum_x += x;
+                sum_y += y;
+                count += 1;
+            }
+        }
+
+        if count == 0 {
             return Ok(());
         }
 
-        let avg_x: f64 = coords.iter().map(|(x, _)| *x).sum::<f64>() / coords.len() as f64;
-        let avg_y: f64 = coords.iter().map(|(_, y)| *y).sum::<f64>() / coords.len() as f64;
+        let avg_x = sum_x / count as f64;
+        let avg_y = sum_y / count as f64;
 
         if self.start_avg_x.is_none() {
             self.start_avg_x = Some(avg_x);
@@ -323,12 +368,18 @@ impl GestureEngine {
 
         match self.session_mode {
             SessionMode::EdgeVolume => {
-                let step = -dy * (self.config.volume_step / 10.0);
-                self.volume.adjust(step);
+                // Enforce edge_trigger_threshold as activation deadband
+                if total_dy.abs() >= self.config.edge_trigger_threshold {
+                    let step = -dy * (self.config.volume_step / 10.0);
+                    self.volume.adjust(step);
+                }
             }
             SessionMode::EdgeBrightness => {
-                let step = -dy * (self.config.brightness_step / 10.0);
-                self.brightness.adjust(step);
+                // Enforce edge_trigger_threshold as activation deadband
+                if total_dy.abs() >= self.config.edge_trigger_threshold {
+                    let step = -dy * (self.config.brightness_step / 10.0);
+                    self.brightness.adjust(step);
+                }
             }
             SessionMode::Gesture3 => {
                 if !self.discrete_fired && dist > self.config.discrete_threshold {
@@ -345,21 +396,21 @@ impl GestureEngine {
                     self.discrete_fired = true;
                 }
             }
-            SessionMode::Gesture4 => {
-                if !self.discrete_fired && dist > self.config.discrete_threshold {
-                    if total_dx.abs() > total_dy.abs() {
-                        if total_dx > 0.0 {
-                            self.fire_action("swipe4_right")?;
-                        } else {
-                            self.fire_action("swipe4_left")?;
-                        }
-                    } else if total_dy < 0.0 {
-                        self.fire_action("swipe4_up")?;
+            SessionMode::Gesture4
+                if !self.discrete_fired && dist > self.config.discrete_threshold =>
+            {
+                if total_dx.abs() > total_dy.abs() {
+                    if total_dx > 0.0 {
+                        self.fire_action("swipe4_right")?;
                     } else {
-                        self.fire_action("swipe4_down")?;
+                        self.fire_action("swipe4_left")?;
                     }
-                    self.discrete_fired = true;
+                } else if total_dy < 0.0 {
+                    self.fire_action("swipe4_up")?;
+                } else {
+                    self.fire_action("swipe4_down")?;
                 }
+                self.discrete_fired = true;
             }
             _ => {}
         }
@@ -380,7 +431,9 @@ impl GestureEngine {
             }
         }
 
-        self.slots.clear();
+        for slot in &mut self.slots {
+            *slot = SlotData::default();
+        }
         self.buffer.clear();
         self.session_mode = SessionMode::Pointer;
         self.settle_peak = 0;

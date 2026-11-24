@@ -88,8 +88,14 @@ fn default_shortcuts() -> HashMap<String, String> {
     map.insert("pinch3_out".into(), "key:KEY_PLAYPAUSE".into());
     map.insert("swipe4_up".into(), "shortcut:Overview".into());
     map.insert("swipe4_down".into(), "shortcut:Show Desktop".into());
-    map.insert("swipe4_left".into(), "shortcut:Switch to Previous Desktop".into());
-    map.insert("swipe4_right".into(), "shortcut:Switch to Next Desktop".into());
+    map.insert(
+        "swipe4_left".into(),
+        "shortcut:Switch to Previous Desktop".into(),
+    );
+    map.insert(
+        "swipe4_right".into(),
+        "shortcut:Switch to Next Desktop".into(),
+    );
     map
 }
 

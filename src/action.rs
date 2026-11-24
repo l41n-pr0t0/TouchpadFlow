@@ -107,6 +107,11 @@ impl VolumeController {
     }
 
     #[must_use]
+    pub fn target_value(&self) -> f64 {
+        *self.target.lock().unwrap()
+    }
+
+    #[must_use]
     pub fn backend(&self) -> AudioBackend {
         self.backend
     }
@@ -114,7 +119,10 @@ impl VolumeController {
     fn fetch_system_volume(backend: AudioBackend) -> f64 {
         match backend {
             AudioBackend::Pipewire => {
-                if let Ok(out) = Command::new("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SINK@"]).output() {
+                if let Ok(out) = Command::new("wpctl")
+                    .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
+                    .output()
+                {
                     let s = String::from_utf8_lossy(&out.stdout);
                     let parts: Vec<&str> = s.split_whitespace().collect();
                     if parts.len() >= 2 {
@@ -125,7 +133,10 @@ impl VolumeController {
                 }
             }
             AudioBackend::Pulseaudio => {
-                if let Ok(out) = Command::new("pactl").args(["get-sink-volume", "@DEFAULT_SINK@"]).output() {
+                if let Ok(out) = Command::new("pactl")
+                    .args(["get-sink-volume", "@DEFAULT_SINK@"])
+                    .output()
+                {
                     let s = String::from_utf8_lossy(&out.stdout);
                     // Output format: "... Volume: front-left: 65536 / 100% / -0.00 dB, ..."
                     if let Some(pct_idx) = s.find('%') {
@@ -184,37 +195,59 @@ impl VolumeController {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrightnessBackend {
-    DirectSysfs(PathBuf, i32),
-    Brightnessctl(String),
+    DirectSysfs(Vec<(PathBuf, i32)>),
+    Brightnessctl(Vec<String>),
     Light(String),
 }
 
 impl BrightnessBackend {
     #[must_use]
     pub fn detect() -> Option<Self> {
-        let (dev_name, dev_path, max_val) = detect_primary_backlight_info()?;
+        let all_devs = detect_all_backlights();
 
-        // 1. Direct sysfs write (0 subprocess overhead, works with udev video group or permissions)
-        let brightness_file = dev_path.join("brightness");
-        if fs::OpenOptions::new().write(true).open(&brightness_file).is_ok() {
-            println!("Detected direct sysfs backlight control (0 subprocess overhead): {:?}", brightness_file);
-            return Some(BrightnessBackend::DirectSysfs(brightness_file, max_val));
+        // 1. Direct sysfs write (0 subprocess overhead, works with uaccess udev rules)
+        let mut writable_sysfs = Vec::new();
+        for (_, dev_path, max_val) in &all_devs {
+            let brightness_file = dev_path.join("brightness");
+            if fs::OpenOptions::new()
+                .write(true)
+                .open(&brightness_file)
+                .is_ok()
+            {
+                writable_sysfs.push((brightness_file, *max_val));
+            }
+        }
+        if !writable_sysfs.is_empty() {
+            println!(
+                "Detected direct sysfs backlight control ({} device(s))",
+                writable_sysfs.len()
+            );
+            return Some(BrightnessBackend::DirectSysfs(writable_sysfs));
         }
 
         // 2. brightnessctl (Fedora, Arch, Debian, Ubuntu, Alpine)
-        if Command::new("brightnessctl").arg("--version").output().is_ok() {
-            println!("Detected brightnessctl for device: {}", dev_name);
-            return Some(BrightnessBackend::Brightnessctl(dev_name));
+        if Command::new("brightnessctl")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            let names: Vec<String> = all_devs.iter().map(|(n, _, _)| n.clone()).collect();
+            println!("Detected brightnessctl for devices: {:?}", names);
+            return Some(BrightnessBackend::Brightnessctl(names));
         }
 
         // 3. light (Debian, Arch, Void)
         if Command::new("light").arg("-v").output().is_ok() {
-            println!("Detected 'light' utility for device: {}", dev_name);
-            return Some(BrightnessBackend::Light(dev_name));
+            if let Some((name, _, _)) = all_devs.first() {
+                println!("Detected 'light' utility for device: {}", name);
+                return Some(BrightnessBackend::Light(name.clone()));
+            }
         }
 
-        println!("Fallback to brightnessctl: {}", dev_name);
-        Some(BrightnessBackend::Brightnessctl(dev_name))
+        println!("Fallback to brightnessctl");
+        Some(BrightnessBackend::Brightnessctl(
+            all_devs.into_iter().map(|(n, _, _)| n).collect(),
+        ))
     }
 }
 
@@ -293,10 +326,19 @@ impl BrightnessController {
     }
 
     #[must_use]
+    pub fn target_value(&self) -> f64 {
+        *self.target.lock().unwrap()
+    }
+
+    #[must_use]
     pub fn backend_description(&self) -> String {
         match &self.backend {
-            Some(BrightnessBackend::DirectSysfs(p, max)) => format!("Direct sysfs {:?} (max: {})", p, max),
-            Some(BrightnessBackend::Brightnessctl(d)) => format!("brightnessctl (-d {})", d),
+            Some(BrightnessBackend::DirectSysfs(devices)) => {
+                format!("Direct sysfs ({} devices)", devices.len())
+            }
+            Some(BrightnessBackend::Brightnessctl(devices)) => {
+                format!("brightnessctl ({:?})", devices)
+            }
             Some(BrightnessBackend::Light(d)) => format!("light (-s {})", d),
             None => "No backlight device found".into(),
         }
@@ -304,24 +346,51 @@ impl BrightnessController {
 
     fn fetch_system_brightness(backend: Option<&BrightnessBackend>) -> f64 {
         match backend {
-            Some(BrightnessBackend::DirectSysfs(path, max_val)) => {
-                if let Ok(s) = fs::read_to_string(path) {
-                    if let Ok(curr) = s.trim().parse::<i32>() {
-                        if *max_val > 0 {
-                            return (curr as f64 / *max_val as f64).clamp(0.01, 1.0);
+            Some(BrightnessBackend::DirectSysfs(devices)) => {
+                for (path, max_val) in devices {
+                    if let Ok(s) = fs::read_to_string(path) {
+                        if let Ok(curr) = s.trim().parse::<i32>() {
+                            if *max_val > 0 {
+                                return (curr as f64 / *max_val as f64).clamp(0.01, 1.0);
+                            }
                         }
                     }
                 }
             }
-            Some(BrightnessBackend::Brightnessctl(d)) => {
-                let curr_out = Command::new("brightnessctl").args(["-d", d, "get"]).output();
-                let max_out = Command::new("brightnessctl").args(["-d", d, "max"]).output();
-                if let (Ok(curr), Ok(max)) = (curr_out, max_out) {
+            Some(BrightnessBackend::Brightnessctl(devices)) => {
+                // First try brightnessctl default
+                if let (Ok(curr), Ok(max)) = (
+                    Command::new("brightnessctl").args(["get"]).output(),
+                    Command::new("brightnessctl").args(["max"]).output(),
+                ) {
                     let c_str = String::from_utf8_lossy(&curr.stdout);
                     let m_str = String::from_utf8_lossy(&max.stdout);
-                    if let (Ok(c), Ok(m)) = (c_str.trim().parse::<f64>(), m_str.trim().parse::<f64>()) {
+                    if let (Ok(c), Ok(m)) =
+                        (c_str.trim().parse::<f64>(), m_str.trim().parse::<f64>())
+                    {
                         if m > 0.0 {
                             return (c / m).clamp(0.01, 1.0);
+                        }
+                    }
+                }
+                // Fallback to checking specific devices
+                for dev in devices {
+                    if let (Ok(curr), Ok(max)) = (
+                        Command::new("brightnessctl")
+                            .args(["-d", dev, "get"])
+                            .output(),
+                        Command::new("brightnessctl")
+                            .args(["-d", dev, "max"])
+                            .output(),
+                    ) {
+                        let c_str = String::from_utf8_lossy(&curr.stdout);
+                        let m_str = String::from_utf8_lossy(&max.stdout);
+                        if let (Ok(c), Ok(m)) =
+                            (c_str.trim().parse::<f64>(), m_str.trim().parse::<f64>())
+                        {
+                            if m > 0.0 {
+                                return (c / m).clamp(0.01, 1.0);
+                            }
                         }
                     }
                 }
@@ -343,20 +412,29 @@ impl BrightnessController {
         let pct_int = (val * 100.0).round() as i32;
 
         match backend {
-            Some(BrightnessBackend::DirectSysfs(path, max_val)) => {
-                let raw_val = ((val * *max_val as f64).round() as i32).max(1);
-                let _ = fs::write(path, raw_val.to_string());
+            Some(BrightnessBackend::DirectSysfs(devices)) => {
+                for (path, max_val) in devices {
+                    let raw_val = ((val * *max_val as f64).round() as i32).max(1);
+                    let _ = fs::write(path, raw_val.to_string());
+                }
             }
-            Some(BrightnessBackend::Brightnessctl(d)) => {
+            Some(BrightnessBackend::Brightnessctl(devices)) => {
                 let pct_str = format!("{}%", pct_int);
+                // 1. Update the system default backlight device chosen by brightnessctl
                 let _ = Command::new("brightnessctl")
-                    .args(["-d", d, "set", &pct_str, "-q"])
+                    .args(["set", &pct_str, "-q"])
                     .status();
+                // 2. Also update all detected physical backlight controllers (e.g. nvidia_0 and intel_backlight on hybrid laptops)
+                for dev in devices {
+                    let _ = Command::new("brightnessctl")
+                        .args(["-d", dev, "set", &pct_str, "-q"])
+                        .status();
+                }
             }
-            Some(BrightnessBackend::Light(_)) => {
+            Some(BrightnessBackend::Light(dev)) => {
                 let pct_str = format!("{}", pct_int);
                 let _ = Command::new("light")
-                    .args(["-S", &pct_str])
+                    .args(["-s", dev, "-S", &pct_str])
                     .status();
             }
             None => {}
@@ -366,66 +444,74 @@ impl BrightnessController {
     }
 }
 
-/// Discovers the active laptop display panel backlight device in /sys/class/backlight.
-/// Returns (device_name, device_sysfs_path, max_brightness_value).
-pub fn detect_primary_backlight_info() -> Option<(String, PathBuf, i32)> {
-    let entries = fs::read_dir("/sys/class/backlight").ok()?;
-    let mut candidates: Vec<(String, PathBuf, bool, i32)> = Vec::new();
+/// Discovers all laptop display panel backlight devices in /sys/class/backlight.
+/// Returns Vec<(device_name, device_sysfs_path, max_brightness_value)>.
+pub fn detect_all_backlights() -> Vec<(String, PathBuf, i32)> {
+    let mut candidates: Vec<(String, PathBuf, i32)> = Vec::new();
+    let entries = match fs::read_dir("/sys/class/backlight") {
+        Ok(e) => e,
+        Err(_) => return candidates,
+    };
 
     for entry in entries.flatten() {
         if let Ok(name) = entry.file_name().into_string() {
             let path = entry.path();
-            let is_edp = fs::read_link(&path)
-                .map(|p| p.to_string_lossy().contains("eDP"))
-                .unwrap_or(false);
-
             let max_val = fs::read_to_string(path.join("max_brightness"))
                 .ok()
                 .and_then(|s| s.trim().parse::<i32>().ok())
                 .unwrap_or(100);
 
-            candidates.push((name, path, is_edp, max_val));
+            candidates.push((name, path, max_val));
         }
     }
 
-    // 1. Prefer eDP internal panel
-    if let Some((name, path, _, max)) = candidates.iter().find(|(_, _, is_edp, _)| *is_edp) {
-        return Some((name.clone(), path.clone(), *max));
-    }
+    candidates
+}
 
-    // 2. Prefer integrated graphics (intel or amd)
-    if let Some((name, path, _, max)) = candidates
-        .iter()
-        .find(|(n, _, _, _)| n.starts_with("intel_") || n.starts_with("amdgpu_"))
-    {
-        return Some((name.clone(), path.clone(), *max));
+fn get_qdbus_bin() -> Option<&'static str> {
+    if Command::new("qdbus-qt6").arg("--version").output().is_ok() {
+        Some("qdbus-qt6")
+    } else if Command::new("qdbus6").arg("--version").output().is_ok() {
+        Some("qdbus6")
+    } else if Command::new("qdbus").arg("--version").output().is_ok() {
+        Some("qdbus")
+    } else {
+        None
     }
-
-    // 3. Fallback to first available
-    if let Some((name, path, _, max)) = candidates.first() {
-        return Some((name.clone(), path.clone(), *max));
-    }
-
-    None
 }
 
 fn show_osd_volume(pct: i32) {
-    let de = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+    let de = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_uppercase();
 
     if de.contains("KDE") || de.contains("PLASMA") {
-        let _ = Command::new("qdbus")
-            .args([
-                "org.kde.plasmashell",
-                "/org/kde/osdService",
-                "org.kde.osdService.volumeChanged",
-                &pct.to_string(),
-            ])
-            .status();
-    } else if Command::new("swayosd-client").arg("--version").output().is_ok() {
+        if let Some(qdbus) = get_qdbus_bin() {
+            let _ = Command::new(qdbus)
+                .args([
+                    "org.kde.plasmashell",
+                    "/org/kde/osdService",
+                    "org.kde.osdService.volumeChanged",
+                    &pct.to_string(),
+                ])
+                .status();
+            return;
+        }
+    }
+
+    if Command::new("swayosd-client")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         let _ = Command::new("swayosd-client")
             .args(["--output-volume", &pct.to_string()])
             .status();
-    } else if Command::new("notify-send").arg("--version").output().is_ok() {
+    } else if Command::new("notify-send")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         let pct_str = format!("{}%", pct);
         let _ = Command::new("notify-send")
             .args([
@@ -445,22 +531,37 @@ fn show_osd_volume(pct: i32) {
 }
 
 fn show_osd_brightness(pct: i32) {
-    let de = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+    let de = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_uppercase();
 
     if de.contains("KDE") || de.contains("PLASMA") {
-        let _ = Command::new("qdbus")
-            .args([
-                "org.kde.plasmashell",
-                "/org/kde/osdService",
-                "org.kde.osdService.brightnessChanged",
-                &pct.to_string(),
-            ])
-            .status();
-    } else if Command::new("swayosd-client").arg("--version").output().is_ok() {
+        if let Some(qdbus) = get_qdbus_bin() {
+            let _ = Command::new(qdbus)
+                .args([
+                    "org.kde.plasmashell",
+                    "/org/kde/osdService",
+                    "org.kde.osdService.brightnessChanged",
+                    &pct.to_string(),
+                ])
+                .status();
+            return;
+        }
+    }
+
+    if Command::new("swayosd-client")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         let _ = Command::new("swayosd-client")
             .args(["--brightness", &pct.to_string()])
             .status();
-    } else if Command::new("notify-send").arg("--version").output().is_ok() {
+    } else if Command::new("notify-send")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
         let pct_str = format!("{}%", pct);
         let _ = Command::new("notify-send")
             .args([
@@ -483,9 +584,12 @@ pub fn execute_action(action: &str) {
     if let Some(cmd) = action.strip_prefix("command:") {
         let _ = Command::new("sh").args(["-c", cmd]).spawn();
     } else if let Some(shortcut) = action.strip_prefix("shortcut:") {
-        let de = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+        let de = env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_uppercase();
         if de.contains("KDE") || de.contains("PLASMA") {
-            let _ = Command::new("qdbus6")
+            let qdbus = get_qdbus_bin().unwrap_or("qdbus6");
+            let _ = Command::new(qdbus)
                 .args([
                     "org.kde.kglobalaccel",
                     "/component/kwin",
@@ -497,7 +601,8 @@ pub fn execute_action(action: &str) {
     } else if let Some(dbus) = action.strip_prefix("dbus:") {
         let parts: Vec<&str> = dbus.split_whitespace().collect();
         if !parts.is_empty() {
-            let _ = Command::new("qdbus6").args(&parts).spawn();
+            let qdbus = get_qdbus_bin().unwrap_or("qdbus6");
+            let _ = Command::new(qdbus).args(&parts).spawn();
         }
     }
 }

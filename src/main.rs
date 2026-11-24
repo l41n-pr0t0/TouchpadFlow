@@ -1,43 +1,53 @@
-mod action;
-mod config;
-mod device;
-mod error;
-mod gesture;
-mod gui;
-mod gui_assets;
-
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
 use evdev::Device;
 
-use action::{BrightnessController, VolumeController};
-use config::AppConfig;
-use device::{find_touchpad, ActiveDevice, GrabGuard, TouchpadMetrics, VirtualOutput};
-use error::{AppError, Result};
-use gesture::GestureEngine;
+use touchpadflow::action::{BrightnessController, VolumeController};
+use touchpadflow::config::AppConfig;
+use touchpadflow::device::{
+    ActiveDevice, GrabGuard, TouchpadMetrics, VirtualOutput, find_touchpad,
+};
+use touchpadflow::error::{AppError, Result};
+use touchpadflow::gesture::GestureEngine;
+use touchpadflow::gui;
+use touchpadflow::ipc::{self, IpcServer};
 
 #[derive(Parser, Debug)]
 #[command(name = "touchpadflow")]
-#[command(about = "Universal Linux touchpad gesture daemon with two-finger edge volume and brightness controls")]
+#[command(
+    about = "Universal Linux touchpad gesture daemon with two-finger edge volume and brightness controls"
+)]
 struct Cli {
-    #[arg(short, long, help = "Path to the touchpad evdev device (e.g. /dev/input/event9)")]
+    #[arg(
+        short,
+        long,
+        help = "Path to the touchpad evdev device (e.g. /dev/input/event9)"
+    )]
     device: Option<PathBuf>,
 
     #[arg(short, long, help = "Path to JSON configuration file")]
     config: Option<PathBuf>,
 
-    #[arg(long, default_value_t = true, help = "Exclusively grab the physical touchpad device")]
+    #[arg(
+        long,
+        default_value_t = true,
+        help = "Exclusively grab the physical touchpad device"
+    )]
     grab: bool,
 
     #[arg(long, help = "Monitor events without grabbing or filtering")]
     monitor: bool,
 
-    #[arg(long, help = "Run in background as a daemon (portable across non-systemd distros like Alpine/Void/Gentoo)")]
+    #[arg(
+        long,
+        help = "Run in background as a daemon (portable across non-systemd distros like Alpine/Void/Gentoo)"
+    )]
     daemon: bool,
 
     #[arg(long, help = "Launch the interactive TouchpadFlow Control Center GUI")]
@@ -48,6 +58,18 @@ struct Cli {
 
     #[arg(long, help = "Emergency toggle: pauses or resumes the running daemon")]
     toggle: bool,
+
+    #[arg(long, help = "Pause the running daemon (releases hardware grab)")]
+    pause: bool,
+
+    #[arg(long, help = "Resume the running daemon")]
+    resume: bool,
+
+    #[arg(long, help = "Query live daemon status")]
+    status: bool,
+
+    #[arg(long, help = "Reload configuration from disk in running daemon")]
+    reload: bool,
 }
 
 fn main() -> Result<()> {
@@ -58,10 +80,71 @@ fn main() -> Result<()> {
     }
 
     if args.toggle {
-        // Find running touchpadflow and send SIGUSR1 (emergency toggle)
-        let _ = Command::new("pkill").args(["-SIGUSR1", "-f", "touchpadflow"]).status();
-        println!("Sent emergency toggle signal (SIGUSR1) to TouchpadFlow daemon.");
-        return Ok(());
+        match ipc::send_command("toggle") {
+            Ok(resp) => {
+                println!("{resp}");
+                return Ok(());
+            }
+            Err(_) => {
+                let _ = Command::new("pkill")
+                    .args(["-SIGUSR1", "-x", "touchpadflow"])
+                    .status();
+                println!("Sent SIGUSR1 toggle signal to TouchpadFlow daemon.");
+                return Ok(());
+            }
+        }
+    }
+
+    if args.pause {
+        match ipc::send_command("pause") {
+            Ok(resp) => {
+                println!("{resp}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Error connecting to TouchpadFlow daemon: {e}");
+                return Ok(());
+            }
+        }
+    }
+
+    if args.resume {
+        match ipc::send_command("resume") {
+            Ok(resp) => {
+                println!("{resp}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Error connecting to TouchpadFlow daemon: {e}");
+                return Ok(());
+            }
+        }
+    }
+
+    if args.status {
+        match ipc::send_command("status") {
+            Ok(resp) => {
+                println!("{resp}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("TouchpadFlow daemon is not running ({e})");
+                return Ok(());
+            }
+        }
+    }
+
+    if args.reload {
+        match ipc::send_command("reload") {
+            Ok(resp) => {
+                println!("{resp}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("Error connecting to TouchpadFlow daemon: {e}");
+                return Ok(());
+            }
+        }
     }
 
     if args.daemon {
@@ -77,34 +160,72 @@ fn main() -> Result<()> {
             child_cmd.arg("--grab=false");
         }
         let child = child_cmd.spawn().map_err(AppError::Io)?;
-        println!("TouchpadFlow daemon spawned in background with PID: {}", child.id());
+        println!(
+            "TouchpadFlow daemon spawned in background with PID: {}",
+            child.id()
+        );
         return Ok(());
     }
 
     // Set panic hook to ensure crash reports never leave hardware in an unusable state
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        eprintln!("\n[EMERGENCY] TouchpadFlow encountered an unexpected panic: {}", info);
-        eprintln!("[EMERGENCY] Releasing physical device grab and restoring native touchpad state...");
+        eprintln!(
+            "\n[EMERGENCY] TouchpadFlow encountered an unexpected panic: {}",
+            info
+        );
+        eprintln!(
+            "[EMERGENCY] Releasing physical device grab and restoring native touchpad state..."
+        );
         default_panic(info);
     }));
 
     let grab_mode = args.grab && !args.monitor;
     let cfg = AppConfig::load_or_default(args.config.as_deref());
 
-    // Signal flags
+    // Signal and state flags
     let running = Arc::new(AtomicBool::new(true));
     let paused = Arc::new(AtomicBool::new(false));
+    let reload_flag = Arc::new(AtomicBool::new(false));
+    let device_desc = Arc::new(Mutex::new("Initializing".to_string()));
 
-    let r = Arc::clone(&running);
-    let p = Arc::clone(&paused);
+    // Dedicated signal handling thread with bidirectional SIGUSR1 toggle
+    let mut signals = signal_hook::iterator::Signals::new([
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+        signal_hook::consts::SIGUSR1,
+    ])
+    .map_err(AppError::Io)?;
 
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&r))
-        .map_err(AppError::Io)?;
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&r))
-        .map_err(AppError::Io)?;
-    signal_hook::flag::register(signal_hook::consts::SIGUSR1, Arc::clone(&p))
-        .map_err(AppError::Io)?;
+    let sig_running = Arc::clone(&running);
+    let sig_paused = Arc::clone(&paused);
+    thread::spawn(move || {
+        for sig in signals.forever() {
+            match sig {
+                signal_hook::consts::SIGINT | signal_hook::consts::SIGTERM => {
+                    sig_running.store(false, Ordering::SeqCst);
+                    break;
+                }
+                signal_hook::consts::SIGUSR1 => {
+                    let prev = sig_paused.fetch_xor(true, Ordering::SeqCst);
+                    eprintln!(
+                        "[SIGNAL] SIGUSR1: Toggled daemon state to {}",
+                        if !prev { "paused" } else { "active" }
+                    );
+                }
+                _ => {}
+            }
+        }
+    });
+
+    // Start Unix domain socket IPC server
+    let _ipc_server = IpcServer::start(
+        Arc::clone(&running),
+        Arc::clone(&paused),
+        Arc::clone(&reload_flag),
+        Arc::clone(&device_desc),
+    )
+    .map_err(AppError::Io)?;
 
     // Worker threads
     let (volume, vol_worker) = VolumeController::new();
@@ -112,7 +233,12 @@ fn main() -> Result<()> {
 
     println!("========================================================");
     println!(" TouchpadFlow v0.1.0 — Least Privilege & Fault Tolerant");
-    println!(" Audio: {:?} | Backlight: {}", volume.backend(), brightness.backend_description());
+    println!(
+        " Audio: {:?} | Backlight: {}",
+        volume.backend(),
+        brightness.backend_description()
+    );
+    println!(" Control IPC socket: {:?}", ipc::socket_path());
     println!(" Emergency toggle: run 'touchpadflow --toggle' or send SIGUSR1");
     println!("========================================================");
 
@@ -124,7 +250,7 @@ fn main() -> Result<()> {
                 Some(p) => p,
                 None => {
                     eprintln!("No touchpad found. Retrying in 2 seconds...");
-                    std::thread::sleep(Duration::from_secs(2));
+                    thread::sleep(Duration::from_secs(2));
                     continue;
                 }
             },
@@ -134,8 +260,11 @@ fn main() -> Result<()> {
         let dev = match Device::open(&dev_path) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("Failed opening {:?}: {}. Retrying in 2 seconds...", dev_path, e);
-                std::thread::sleep(Duration::from_secs(2));
+                eprintln!(
+                    "Failed opening {:?}: {}. Retrying in 2 seconds...",
+                    dev_path, e
+                );
+                thread::sleep(Duration::from_secs(2));
                 continue;
             }
         };
@@ -146,11 +275,15 @@ fn main() -> Result<()> {
             metrics.min_x, metrics.max_x, metrics.min_y, metrics.max_y
         );
 
+        if let Ok(mut lock) = device_desc.lock() {
+            *lock = format!("{:?}", dev_path);
+        }
+
         let output = match VirtualOutput::new(&dev, grab_mode) {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("UInput initialization error: {}. Retrying...", e);
-                std::thread::sleep(Duration::from_secs(2));
+                thread::sleep(Duration::from_secs(2));
                 continue;
             }
         };
@@ -180,11 +313,19 @@ fn main() -> Result<()> {
 
         // Active event loop
         while running.load(Ordering::Relaxed) {
+            // Live configuration reload check
+            if reload_flag.load(Ordering::Relaxed) {
+                reload_flag.store(false, Ordering::Relaxed);
+                let new_cfg = AppConfig::load_or_default(args.config.as_deref());
+                println!("Live config reloaded into running GestureEngine.");
+                engine.update_config(new_cfg);
+            }
+
             // Check emergency pause state
-            if p.load(Ordering::Relaxed) {
+            if paused.load(Ordering::Relaxed) {
                 active_device.pause();
                 let _ = engine.emergency_reset();
-                std::thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(50));
                 continue;
             } else {
                 active_device.resume();
@@ -204,12 +345,15 @@ fn main() -> Result<()> {
                 Err(e) => {
                     // Check if device was physically disconnected
                     if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(19) {
-                        eprintln!("[FAULT] Touchpad disconnected ({:?}). Cleaning up...", dev_path);
+                        eprintln!(
+                            "[FAULT] Touchpad disconnected ({:?}). Cleaning up...",
+                            dev_path
+                        );
                         let _ = engine.emergency_reset();
                         break;
                     }
                     if running.load(Ordering::Relaxed) {
-                        std::thread::sleep(Duration::from_millis(10));
+                        thread::sleep(Duration::from_millis(10));
                     }
                 }
             }

@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use evdev::uinput::VirtualDevice;
 use evdev::{
-    AbsoluteAxisCode, AttributeSet, Device, EventType,
-    InputEvent, KeyCode, PropType, SynchronizationCode,
+    AbsoluteAxisCode, AttributeSet, Device, EventType, InputEvent, KeyCode, PropType,
+    SynchronizationCode,
 };
 
 use crate::error::{AppError, Result};
@@ -88,6 +88,14 @@ impl VirtualOutput {
         })
     }
 
+    #[must_use]
+    pub fn dummy() -> Self {
+        Self {
+            touchpad: None,
+            keyboard: None,
+        }
+    }
+
     fn create_virtual_keyboard() -> Result<VirtualDevice> {
         let mut keys: AttributeSet<KeyCode> = AttributeSet::new();
         keys.insert(KeyCode::BTN_LEFT);
@@ -135,9 +143,9 @@ impl VirtualOutput {
                 for code in supported_abs.iter() {
                     let info = abs_state[code.0 as usize];
                     let setup = evdev::UinputAbsSetup::new(code, info.into());
-                    builder = builder
-                        .with_absolute_axis(&setup)
-                        .map_err(|e| AppError::Uinput(format!("failed configuring abs axis {code:?}: {e}")))?;
+                    builder = builder.with_absolute_axis(&setup).map_err(|e| {
+                        AppError::Uinput(format!("failed configuring abs axis {code:?}: {e}"))
+                    })?;
                 }
             }
         }
@@ -187,7 +195,11 @@ impl VirtualOutput {
         if let Some(ref mut kb) = self.keyboard {
             let press = InputEvent::new(EventType::KEY.0, key.0, 1);
             let release = InputEvent::new(EventType::KEY.0, key.0, 0);
-            let syn = InputEvent::new(EventType::SYNCHRONIZATION.0, SynchronizationCode::SYN_REPORT.0, 0);
+            let syn = InputEvent::new(
+                EventType::SYNCHRONIZATION.0,
+                SynchronizationCode::SYN_REPORT.0,
+                0,
+            );
             kb.emit(&[press, syn, release, syn]).map_err(AppError::Io)?;
         }
         Ok(())
@@ -289,10 +301,9 @@ pub fn find_touchpad() -> Option<PathBuf> {
                 if let Some(abs) = dev.supported_absolute_axes() {
                     if abs.contains(AbsoluteAxisCode::ABS_MT_POSITION_X)
                         && abs.contains(AbsoluteAxisCode::ABS_MT_POSITION_Y)
+                        && dev.properties().contains(PropType::POINTER)
                     {
-                        if dev.properties().contains(PropType::POINTER) {
-                            return Some(path);
-                        }
+                        return Some(path);
                     }
                 }
             }

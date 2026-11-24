@@ -11,7 +11,8 @@ echo "Building release binary with Rust..."
 cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 
 mkdir -p "$BIN_DEST"
-cp "$SCRIPT_DIR/target/release/touchpadflow" "$BIN_DEST/touchpadflow"
+cp "$SCRIPT_DIR/target/release/touchpadflow" "$BIN_DEST/touchpadflow.tmp"
+mv -f "$BIN_DEST/touchpadflow.tmp" "$BIN_DEST/touchpadflow"
 chmod 755 "$BIN_DEST/touchpadflow"
 echo "[OK] Installed binary to $BIN_DEST/touchpadflow"
 
@@ -39,6 +40,11 @@ if command -v systemctl >/dev/null 2>&1; then
     mkdir -p "$SERVICE_DEST"
     cp "$SCRIPT_DIR/systemd/touchpadflow.service" "$SERVICE_DEST/touchpadflow.service"
     systemctl --user daemon-reload
+    if systemctl --user is-active --quiet touchpadflow.service; then
+        echo "Restarting active touchpadflow.service with new binary..."
+        systemctl --user restart touchpadflow.service
+        echo "[OK] Restarted touchpadflow.service"
+    fi
     echo "[OK] Registered sandboxed systemd user service: $SERVICE_DEST/touchpadflow.service"
 fi
 

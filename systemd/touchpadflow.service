@@ -13,7 +13,8 @@ RestartSec=2
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ProtectKernelTunables=yes
+ProtectKernelTunables=no
+ReadWritePaths=/sys/class/backlight
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 MemoryDenyWriteExecute=yes
@@ -25,10 +26,11 @@ RestrictNamespaces=yes
 # Strict Network Isolation (Input Privacy: never transmits data)
 IPAddressDeny=any
 
-# Hardware Device Restrictions (Touchpad & UInput only)
+# Hardware Device Restrictions (Touchpad, UInput & Null)
 DevicePolicy=closed
 DeviceAllow=/dev/uinput rw
 DeviceAllow=char-input rw
+DeviceAllow=/dev/null rw
 
 [Install]
 WantedBy=graphical-session.target

@@ -7,3 +7,6 @@ KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinpu
 
 # Physical touchpad access restricted strictly to touchpad devices (no keyboards)
 SUBSYSTEM=="input", ENV{ID_INPUT_TOUCHPAD}=="1", TAG+="uaccess"
+
+# Display backlight control for active graphical seat without root
+SUBSYSTEM=="backlight", TAG+="uaccess"

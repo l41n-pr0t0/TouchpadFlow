@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  linux:
+    name: Linux (Rust Core & Tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Rustfmt Check
+        run: cargo fmt --check
+      - name: Clippy Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Run Tests (Synthetic Gestures & Unit)
+        run: cargo test --all-targets --verbose
+      - name: Build Release Binary
+        run: cargo build --release
+
+  macos:
+    name: macOS (MultitouchSupport Engine)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build macOS Daemon
+        run: |
+          cd macos
+          cargo build --release --verbose
+
+  windows:
+    name: Windows (.NET 8 PTP Tool)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build Windows Executable (x64)
+        run: |
+          dotnet publish windows/TouchpadFlow.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true
+      - name: Build Windows Executable (ARM64)
+        run: |
+          dotnet publish windows/TouchpadFlow.csproj -c Release -r win-arm64 --self-contained -p:PublishSingleFile=true
