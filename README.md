@@ -8,23 +8,25 @@ TouchpadFlow is a low-latency touchpad gesture daemon written in Rust for Linux 
 - **macOS (Rust Daemon):** Native Apple Silicon / Intel daemon in `macos/` written in pure Rust, interfacing with Apple's `MultitouchSupport` framework. See [macos/README.md](macos/README.md).
 - **Windows (PTP Tool):** Portable tray utility in `windows/` inspired by Wintego's SurfaceEdge architecture, using Windows Precision Touchpad HID Raw Input, Core Audio, WMI, and native Windows 11 OSD flyouts. See [windows/README.md](windows/README.md).
 
-## TouchpadFlow Control Center (GUI)
+## TouchpadFlow app (native settings window)
 
-TouchpadFlow includes a built-in interactive Control Center. Launch it with:
+`touchpadflow-app` is a native Rust desktop app (egui). It has no browser, no web server and no network access, and it runs on KDE, GNOME and other Linux desktops, plus Windows and macOS.
 
 ```bash
-touchpadflow --gui
+touchpadflow-app        # or open "TouchpadFlow" from your app launcher
 ```
 
-| Feature | Purpose |
+| Setting | What it does |
 | :--- | :--- |
-| **Gesture editor** | Interactive sliders to configure left and right edge boundaries (5% to 35%) |
-| **Sensitivity** | Adjust volume/brightness step scaling, velocity multipliers, and contact settling |
-| **Live preview** | Visualise real-time multi-finger movement and touch coordinates on a canvas |
-| **Action mapping** | Assign volume, brightness, media keys, or custom shortcuts to edges & gestures |
-| **Device profiles** | Save, load, and switch between profiles (e.g. Ultra-Responsive, Wide Edges) |
-| **Gesture testing** | Live test bench with interactive gauges to test gestures without altering hardware |
-| **Service status** | Live engine status indicator with Start, Stop, and Restart controls |
+| **Gestures on/off** | Off hands the touchpad straight back to the system |
+| **Touchpad map** | Drag the zone lines to set how much of the pad each edge zone takes (5–45%) |
+| **Controls** | What each edge changes: Brightness, Volume, or Nothing. Defaults: left = brightness, right = volume |
+| **Sensitivity** | How much one full top-to-bottom slide changes the value (20–400%) |
+| **Advanced** | Dead zone before sliding starts, and how long an edge touch waits for a second finger |
+
+Changes save automatically to the shared settings file and apply immediately:
+Linux and macOS use `~/.config/touchpadflow.json`, Windows uses `%APPDATA%\TouchpadFlow\touchpadflow.json`.
+The app shows whether the Linux engine is running, paused or stopped, and reports save or config errors inline.
 
 ## Gesture Layout
 
@@ -148,24 +150,25 @@ Options:
       --grab             Exclusively grab the physical touchpad device [default: true]
       --monitor          Monitor events without grabbing or filtering
       --daemon           Run in background as a daemon (portable across non-systemd distros)
-      --gui              Launch the interactive TouchpadFlow Control Center GUI
-      --port <PORT>      Port for the Control Center GUI [default: 8123]
       --toggle           Emergency toggle: pauses or resumes the running daemon
   -h, --help             Print help
 ```
 
 ## Configuration
 
-Custom configuration files can be placed at `~/.config/touchpadflow.json`:
+The app writes `~/.config/touchpadflow.json` (or `$XDG_CONFIG_HOME/touchpadflow.json`); the daemon reads it on start and on `touchpadflow --reload`. You can also edit it by hand. Out-of-range values are clamped, and a broken file is rejected on reload so the running settings stay in place:
 
 ```json
 {
+  "enabled": true,
   "left_edge_ratio": 0.22,
   "right_edge_ratio": 0.22,
+  "left_action": "brightness",
+  "right_action": "volume",
+  "left_sensitivity": 1.5,
+  "right_sensitivity": 1.5,
   "edge_trigger_threshold": 35.0,
   "settle_window_ms": 25,
-  "volume_step": 0.02,
-  "brightness_step": 0.02,
   "tap_threshold": 150.0,
   "tap_duration_limit_s": 0.30,
   "shortcuts": {

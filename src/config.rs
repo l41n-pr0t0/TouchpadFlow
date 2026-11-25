@@ -1,27 +1,46 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// What a two-finger vertical slide on an edge zone controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EdgeAction {
+    Brightness,
+    Volume,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
-    #[serde(default = "default_left_edge")]
-    pub left_edge_ratio: f32,
+    /// Master switch. false = the engine passes the touchpad through untouched.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 
-    #[serde(default = "default_right_edge")]
+    /// Width of the left/right edge zones as a fraction of the touchpad width.
+    #[serde(default = "default_edge")]
+    pub left_edge_ratio: f32,
+    #[serde(default = "default_edge")]
     pub right_edge_ratio: f32,
 
+    #[serde(default = "default_left_action")]
+    pub left_action: EdgeAction,
+    #[serde(default = "default_right_action")]
+    pub right_action: EdgeAction,
+
+    /// Fraction of the full 0-100% range changed by one full-height slide.
+    #[serde(default = "default_sensitivity")]
+    pub left_sensitivity: f64,
+    #[serde(default = "default_sensitivity")]
+    pub right_sensitivity: f64,
+
+    /// Vertical dead zone before an edge slide starts changing the value (raw device units).
     #[serde(default = "default_edge_threshold")]
     pub edge_trigger_threshold: f64,
 
     #[serde(default = "default_settle_window")]
     pub settle_window_ms: u64,
-
-    #[serde(default = "default_volume_step")]
-    pub volume_step: f64,
-
-    #[serde(default = "default_brightness_step")]
-    pub brightness_step: f64,
 
     #[serde(default = "default_tap_threshold")]
     pub tap_threshold: f64,
@@ -39,103 +58,170 @@ pub struct AppConfig {
     pub shortcuts: HashMap<String, String>,
 }
 
-fn default_left_edge() -> f32 {
+pub const EDGE_RATIO_RANGE: (f32, f32) = (0.05, 0.45);
+pub const SENSITIVITY_RANGE: (f64, f64) = (0.2, 4.0);
+
+fn default_true() -> bool {
+    true
+}
+fn default_edge() -> f32 {
     0.22
 }
-
-fn default_right_edge() -> f32 {
-    0.22
+fn default_left_action() -> EdgeAction {
+    EdgeAction::Brightness
 }
-
+fn default_right_action() -> EdgeAction {
+    EdgeAction::Volume
+}
+fn default_sensitivity() -> f64 {
+    1.5
+}
 fn default_edge_threshold() -> f64 {
     35.0
 }
-
 fn default_settle_window() -> u64 {
     25
 }
-
-fn default_volume_step() -> f64 {
-    0.02
-}
-
-fn default_brightness_step() -> f64 {
-    0.02
-}
-
 fn default_tap_threshold() -> f64 {
     150.0
 }
-
 fn default_tap_duration() -> f64 {
     0.30
 }
-
 fn default_four_finger_tap_duration() -> f64 {
     0.40
 }
-
 fn default_discrete_threshold() -> f64 {
     120.0
 }
 
 fn default_shortcuts() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    map.insert("three_finger_tap".into(), "key:BTN_MIDDLE".into());
-    map.insert("swipe3_left".into(), "key:KEY_PREVIOUSSONG".into());
-    map.insert("swipe3_right".into(), "key:KEY_NEXTSONG".into());
-    map.insert("pinch3_in".into(), "key:KEY_PLAYPAUSE".into());
-    map.insert("pinch3_out".into(), "key:KEY_PLAYPAUSE".into());
-    map.insert("swipe4_up".into(), "shortcut:Overview".into());
-    map.insert("swipe4_down".into(), "shortcut:Show Desktop".into());
-    map.insert(
-        "swipe4_left".into(),
-        "shortcut:Switch to Previous Desktop".into(),
-    );
-    map.insert(
-        "swipe4_right".into(),
-        "shortcut:Switch to Next Desktop".into(),
-    );
-    map
+    [
+        ("three_finger_tap", "key:BTN_MIDDLE"),
+        ("swipe3_left", "key:KEY_PREVIOUSSONG"),
+        ("swipe3_right", "key:KEY_NEXTSONG"),
+        ("pinch3_in", "key:KEY_PLAYPAUSE"),
+        ("pinch3_out", "key:KEY_PLAYPAUSE"),
+        ("swipe4_up", "shortcut:Overview"),
+        ("swipe4_down", "shortcut:Show Desktop"),
+        ("swipe4_left", "shortcut:Switch to Previous Desktop"),
+        ("swipe4_right", "shortcut:Switch to Next Desktop"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self {
-            left_edge_ratio: default_left_edge(),
-            right_edge_ratio: default_right_edge(),
-            edge_trigger_threshold: default_edge_threshold(),
-            settle_window_ms: default_settle_window(),
-            volume_step: default_volume_step(),
-            brightness_step: default_brightness_step(),
-            tap_threshold: default_tap_threshold(),
-            tap_duration_limit_s: default_tap_duration(),
-            four_finger_tap_duration_limit_s: default_four_finger_tap_duration(),
-            discrete_threshold: default_discrete_threshold(),
-            shortcuts: default_shortcuts(),
-        }
+        // Empty JSON object = every serde default, so the two never drift apart.
+        serde_json::from_str("{}").expect("defaults deserialize")
     }
 }
 
 impl AppConfig {
-    pub fn load_or_default(path_opt: Option<&Path>) -> Self {
-        let Some(path) = path_opt else {
-            return Self::default();
-        };
+    /// Clamp hand-edited or out-of-range values to something the engine can run with.
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        let (lo, hi) = EDGE_RATIO_RANGE;
+        self.left_edge_ratio = finite_or(self.left_edge_ratio, default_edge()).clamp(lo, hi);
+        self.right_edge_ratio = finite_or(self.right_edge_ratio, default_edge()).clamp(lo, hi);
+        let (lo, hi) = SENSITIVITY_RANGE;
+        self.left_sensitivity =
+            finite_or(self.left_sensitivity, default_sensitivity()).clamp(lo, hi);
+        self.right_sensitivity =
+            finite_or(self.right_sensitivity, default_sensitivity()).clamp(lo, hi);
+        self.edge_trigger_threshold =
+            finite_or(self.edge_trigger_threshold, default_edge_threshold()).clamp(0.0, 500.0);
+        self.settle_window_ms = self.settle_window_ms.clamp(0, 200);
+        self
+    }
 
-        if !path.exists() {
-            return Self::default();
-        }
-
+    /// Strict load: Err carries a human-readable reason (missing file is not an error).
+    pub fn load(path: &Path) -> Result<Self, String> {
         match fs::read_to_string(path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
-                eprintln!("warning: could not parse config at {:?}: {}", path, e);
-                Self::default()
-            }),
-            Err(e) => {
-                eprintln!("warning: failed reading config file {:?}: {}", path, e);
-                Self::default()
-            }
+            Ok(content) => serde_json::from_str::<Self>(&content)
+                .map(Self::sanitized)
+                .map_err(|e| format!("{} is not valid TouchpadFlow config: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(e) => Err(format!("cannot read {}: {e}", path.display())),
         }
+    }
+
+    /// Lenient load for the daemon: falls back to defaults and logs why.
+    pub fn load_or_default(path_opt: Option<&Path>) -> Self {
+        let path = path_opt.map_or_else(config_path, Path::to_path_buf);
+        Self::load(&path).unwrap_or_else(|e| {
+            eprintln!("warning: {e}; using defaults");
+            Self::default()
+        })
+    }
+
+    /// Atomic write (temp file + rename) so a crash never leaves a half-written config.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, json)?;
+        fs::rename(&tmp, path)
+    }
+}
+
+fn finite_or<T: Into<f64> + Copy>(v: T, fallback: T) -> T {
+    if v.into().is_finite() { v } else { fallback }
+}
+
+/// Shared config location read by every engine (Linux, macOS, Windows) and the app.
+#[must_use]
+pub fn config_path() -> PathBuf {
+    if cfg!(windows) {
+        let base = std::env::var_os("APPDATA").map_or_else(|| PathBuf::from("."), PathBuf::from);
+        return base.join("TouchpadFlow").join("touchpadflow.json");
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("touchpadflow.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_left_brightness_right_volume() {
+        let c = AppConfig::default();
+        assert!(c.enabled);
+        assert_eq!(c.left_action, EdgeAction::Brightness);
+        assert_eq!(c.right_action, EdgeAction::Volume);
+    }
+
+    #[test]
+    fn old_config_files_still_load_and_bad_values_are_clamped() {
+        let c: AppConfig =
+            serde_json::from_str(r#"{"left_edge_ratio": 0.9, "volume_step": 0.02}"#).unwrap();
+        let c = c.sanitized();
+        assert_eq!(c.left_edge_ratio, EDGE_RATIO_RANGE.1);
+        assert_eq!(c.right_action, EdgeAction::Volume);
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let dir = std::env::temp_dir().join(format!("tpf-test-{}", std::process::id()));
+        let path = dir.join("touchpadflow.json");
+        let c = AppConfig {
+            enabled: false,
+            left_action: EdgeAction::Volume,
+            ..AppConfig::default()
+        };
+        c.save(&path).unwrap();
+        assert_eq!(AppConfig::load(&path).unwrap(), c);
+        fs::write(&path, "{not json").unwrap();
+        assert!(AppConfig::load(&path).is_err());
+        let _ = fs::remove_dir_all(dir);
     }
 }

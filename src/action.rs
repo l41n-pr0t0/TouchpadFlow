@@ -94,6 +94,17 @@ impl VolumeController {
         )
     }
 
+    /// No worker thread: values change in memory only, the system is never touched (tests).
+    #[must_use]
+    pub fn detached() -> Self {
+        Self {
+            target: Arc::new(Mutex::new(0.5)),
+            cv: Arc::default(),
+            running: Arc::new(AtomicBool::new(false)),
+            backend: AudioBackend::Pipewire,
+        }
+    }
+
     pub fn adjust(&self, delta: f64) {
         let mut guard = self.target.lock().unwrap();
         let new_val = (*guard + delta).clamp(0.0, 1.50);
@@ -125,10 +136,10 @@ impl VolumeController {
                 {
                     let s = String::from_utf8_lossy(&out.stdout);
                     let parts: Vec<&str> = s.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        if let Ok(v) = parts[1].parse::<f64>() {
-                            return v;
-                        }
+                    if parts.len() >= 2
+                        && let Ok(v) = parts[1].parse::<f64>()
+                    {
+                        return v;
                     }
                 }
             }
@@ -141,10 +152,10 @@ impl VolumeController {
                     // Output format: "... Volume: front-left: 65536 / 100% / -0.00 dB, ..."
                     if let Some(pct_idx) = s.find('%') {
                         let prefix = &s[..pct_idx];
-                        if let Some(last_space) = prefix.rfind(' ') {
-                            if let Ok(pct) = prefix[last_space + 1..].trim().parse::<f64>() {
-                                return (pct / 100.0).clamp(0.0, 1.5);
-                            }
+                        if let Some(last_space) = prefix.rfind(' ')
+                            && let Ok(pct) = prefix[last_space + 1..].trim().parse::<f64>()
+                        {
+                            return (pct / 100.0).clamp(0.0, 1.5);
                         }
                     }
                 }
@@ -152,12 +163,11 @@ impl VolumeController {
             AudioBackend::Alsa => {
                 if let Ok(out) = Command::new("amixer").args(["sget", "Master"]).output() {
                     let s = String::from_utf8_lossy(&out.stdout);
-                    if let Some(start) = s.find('[') {
-                        if let Some(end) = s[start..].find("%]") {
-                            if let Ok(pct) = s[start + 1..start + end].parse::<f64>() {
-                                return (pct / 100.0).clamp(0.0, 1.5);
-                            }
-                        }
+                    if let Some(start) = s.find('[')
+                        && let Some(end) = s[start..].find("%]")
+                        && let Ok(pct) = s[start + 1..start + end].parse::<f64>()
+                    {
+                        return (pct / 100.0).clamp(0.0, 1.5);
                     }
                 }
             }
@@ -237,11 +247,11 @@ impl BrightnessBackend {
         }
 
         // 3. light (Debian, Arch, Void)
-        if Command::new("light").arg("-v").output().is_ok() {
-            if let Some((name, _, _)) = all_devs.first() {
-                println!("Detected 'light' utility for device: {}", name);
-                return Some(BrightnessBackend::Light(name.clone()));
-            }
+        if Command::new("light").arg("-v").output().is_ok()
+            && let Some((name, _, _)) = all_devs.first()
+        {
+            println!("Detected 'light' utility for device: {}", name);
+            return Some(BrightnessBackend::Light(name.clone()));
         }
 
         println!("Fallback to brightnessctl");
@@ -313,6 +323,17 @@ impl BrightnessController {
         )
     }
 
+    /// No worker thread: values change in memory only, the system is never touched (tests).
+    #[must_use]
+    pub fn detached() -> Self {
+        Self {
+            target: Arc::new(Mutex::new(0.5)),
+            cv: Arc::default(),
+            running: Arc::new(AtomicBool::new(false)),
+            backend: None,
+        }
+    }
+
     pub fn adjust(&self, delta: f64) {
         let mut guard = self.target.lock().unwrap();
         let new_val = (*guard + delta).clamp(0.01, 1.0);
@@ -348,12 +369,11 @@ impl BrightnessController {
         match backend {
             Some(BrightnessBackend::DirectSysfs(devices)) => {
                 for (path, max_val) in devices {
-                    if let Ok(s) = fs::read_to_string(path) {
-                        if let Ok(curr) = s.trim().parse::<i32>() {
-                            if *max_val > 0 {
-                                return (curr as f64 / *max_val as f64).clamp(0.01, 1.0);
-                            }
-                        }
+                    if let Ok(s) = fs::read_to_string(path)
+                        && let Ok(curr) = s.trim().parse::<i32>()
+                        && *max_val > 0
+                    {
+                        return (curr as f64 / *max_val as f64).clamp(0.01, 1.0);
                     }
                 }
             }
@@ -367,10 +387,9 @@ impl BrightnessController {
                     let m_str = String::from_utf8_lossy(&max.stdout);
                     if let (Ok(c), Ok(m)) =
                         (c_str.trim().parse::<f64>(), m_str.trim().parse::<f64>())
+                        && m > 0.0
                     {
-                        if m > 0.0 {
-                            return (c / m).clamp(0.01, 1.0);
-                        }
+                        return (c / m).clamp(0.01, 1.0);
                     }
                 }
                 // Fallback to checking specific devices
@@ -387,10 +406,9 @@ impl BrightnessController {
                         let m_str = String::from_utf8_lossy(&max.stdout);
                         if let (Ok(c), Ok(m)) =
                             (c_str.trim().parse::<f64>(), m_str.trim().parse::<f64>())
+                            && m > 0.0
                         {
-                            if m > 0.0 {
-                                return (c / m).clamp(0.01, 1.0);
-                            }
+                            return (c / m).clamp(0.01, 1.0);
                         }
                     }
                 }
@@ -485,18 +503,18 @@ fn show_osd_volume(pct: i32) {
         .unwrap_or_default()
         .to_uppercase();
 
-    if de.contains("KDE") || de.contains("PLASMA") {
-        if let Some(qdbus) = get_qdbus_bin() {
-            let _ = Command::new(qdbus)
-                .args([
-                    "org.kde.plasmashell",
-                    "/org/kde/osdService",
-                    "org.kde.osdService.volumeChanged",
-                    &pct.to_string(),
-                ])
-                .status();
-            return;
-        }
+    if (de.contains("KDE") || de.contains("PLASMA"))
+        && let Some(qdbus) = get_qdbus_bin()
+    {
+        let _ = Command::new(qdbus)
+            .args([
+                "org.kde.plasmashell",
+                "/org/kde/osdService",
+                "org.kde.osdService.volumeChanged",
+                &pct.to_string(),
+            ])
+            .status();
+        return;
     }
 
     if Command::new("swayosd-client")
@@ -535,18 +553,18 @@ fn show_osd_brightness(pct: i32) {
         .unwrap_or_default()
         .to_uppercase();
 
-    if de.contains("KDE") || de.contains("PLASMA") {
-        if let Some(qdbus) = get_qdbus_bin() {
-            let _ = Command::new(qdbus)
-                .args([
-                    "org.kde.plasmashell",
-                    "/org/kde/osdService",
-                    "org.kde.osdService.brightnessChanged",
-                    &pct.to_string(),
-                ])
-                .status();
-            return;
-        }
+    if (de.contains("KDE") || de.contains("PLASMA"))
+        && let Some(qdbus) = get_qdbus_bin()
+    {
+        let _ = Command::new(qdbus)
+            .args([
+                "org.kde.plasmashell",
+                "/org/kde/osdService",
+                "org.kde.osdService.brightnessChanged",
+                &pct.to_string(),
+            ])
+            .status();
+        return;
     }
 
     if Command::new("swayosd-client")

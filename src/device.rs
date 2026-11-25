@@ -56,6 +56,12 @@ impl TouchpadMetrics {
         ((clamped - self.min_x as f64) / width) as f32
     }
 
+    /// Pad height in raw units (never zero).
+    #[must_use]
+    pub fn height(&self) -> f64 {
+        f64::from((self.max_y - self.min_y).max(1))
+    }
+
     #[must_use]
     pub fn is_left_edge(&self, raw_x: f64, ratio: f32) -> bool {
         self.normalize_x(raw_x) <= ratio
@@ -138,15 +144,15 @@ impl VirtualOutput {
                 .map_err(|e| AppError::Uinput(format!("failed copying properties: {e}")))?;
         }
 
-        if let Ok(abs_state) = phys.get_abs_state() {
-            if let Some(supported_abs) = phys.supported_absolute_axes() {
-                for code in supported_abs.iter() {
-                    let info = abs_state[code.0 as usize];
-                    let setup = evdev::UinputAbsSetup::new(code, info.into());
-                    builder = builder.with_absolute_axis(&setup).map_err(|e| {
-                        AppError::Uinput(format!("failed configuring abs axis {code:?}: {e}"))
-                    })?;
-                }
+        if let Ok(abs_state) = phys.get_abs_state()
+            && let Some(supported_abs) = phys.supported_absolute_axes()
+        {
+            for code in supported_abs.iter() {
+                let info = abs_state[code.0 as usize];
+                let setup = evdev::UinputAbsSetup::new(code, info.into());
+                builder = builder.with_absolute_axis(&setup).map_err(|e| {
+                    AppError::Uinput(format!("failed configuring abs axis {code:?}: {e}"))
+                })?;
             }
         }
 
@@ -157,11 +163,20 @@ impl VirtualOutput {
         Ok(dev)
     }
 
-    pub fn forward_raw(&mut self, events: &[InputEvent]) -> Result<()> {
-        if let Some(ref mut tp) = self.touchpad {
-            if !events.is_empty() {
-                tp.emit(events).map_err(AppError::Io)?;
-            }
+    /// Forward events, first re-selecting the slot they were recorded against
+    /// (our own release frames may have moved the virtual pad's current slot).
+    pub fn forward_raw(&mut self, start_slot: usize, events: &[InputEvent]) -> Result<()> {
+        if let Some(ref mut tp) = self.touchpad
+            && !events.is_empty()
+        {
+            let mut evs = Vec::with_capacity(events.len() + 1);
+            evs.push(InputEvent::new(
+                EventType::ABSOLUTE.0,
+                AbsoluteAxisCode::ABS_MT_SLOT.0,
+                start_slot as i32,
+            ));
+            evs.extend_from_slice(events);
+            tp.emit(&evs).map_err(AppError::Io)?;
         }
         Ok(())
     }
@@ -180,6 +195,18 @@ impl VirtualOutput {
                     AbsoluteAxisCode::ABS_MT_TRACKING_ID.0,
                     -1,
                 ));
+            }
+            // Also lift touch/tool buttons, or libinput keeps counting a finger as down.
+            for key in [
+                KeyCode::BTN_TOUCH,
+                KeyCode::BTN_TOOL_FINGER,
+                KeyCode::BTN_TOOL_DOUBLETAP,
+                KeyCode::BTN_TOOL_TRIPLETAP,
+                KeyCode::BTN_TOOL_QUADTAP,
+                KeyCode::BTN_TOOL_QUINTTAP,
+                KeyCode::BTN_LEFT,
+            ] {
+                evs.push(InputEvent::new(EventType::KEY.0, key.0, 0));
             }
             evs.push(InputEvent::new(
                 EventType::SYNCHRONIZATION.0,
@@ -233,11 +260,11 @@ impl GrabGuard {
     }
 
     pub fn regrab(&mut self) -> std::io::Result<()> {
-        if !self.active {
-            if let Some(dev) = &mut self.device {
-                dev.grab()?;
-                self.active = true;
-            }
+        if !self.active
+            && let Some(dev) = &mut self.device
+        {
+            dev.grab()?;
+            self.active = true;
         }
         Ok(())
     }
@@ -296,16 +323,20 @@ pub fn find_touchpad() -> Option<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name()?.to_str()?;
-        if name.starts_with("event") {
-            if let Ok(dev) = Device::open(&path) {
-                if let Some(abs) = dev.supported_absolute_axes() {
-                    if abs.contains(AbsoluteAxisCode::ABS_MT_POSITION_X)
-                        && abs.contains(AbsoluteAxisCode::ABS_MT_POSITION_Y)
-                        && dev.properties().contains(PropType::POINTER)
-                    {
-                        return Some(path);
-                    }
-                }
+        if name.starts_with("event")
+            && let Ok(dev) = Device::open(&path)
+        {
+            if let Some(dev_name) = dev.name()
+                && dev_name.contains("TouchpadFlow")
+            {
+                continue;
+            }
+            if let Some(abs) = dev.supported_absolute_axes()
+                && abs.contains(AbsoluteAxisCode::ABS_MT_POSITION_X)
+                && abs.contains(AbsoluteAxisCode::ABS_MT_POSITION_Y)
+                && dev.properties().contains(PropType::POINTER)
+            {
+                return Some(path);
             }
         }
     }

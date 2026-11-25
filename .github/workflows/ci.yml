@@ -34,6 +34,8 @@ jobs:
         run: |
           cd macos
           cargo build --release --verbose
+      - name: Build settings app
+        run: cargo build --release --bin touchpadflow-app
 
   windows:
     name: Windows (.NET 8 PTP Tool)
@@ -44,6 +46,9 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build settings app
+        run: cargo build --release --bin touchpadflow-app
       - name: Build Windows Executable (x64)
         run: |
           dotnet publish windows/TouchpadFlow.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true

@@ -1,9 +1,11 @@
+#![cfg(target_os = "linux")]
+
 use std::thread;
 use std::time::Duration;
 
 use evdev::{AbsoluteAxisCode, EventType, InputEvent, SynchronizationCode};
 use touchpadflow::action::{BrightnessController, VolumeController};
-use touchpadflow::config::AppConfig;
+use touchpadflow::config::{AppConfig, EdgeAction};
 use touchpadflow::device::{TouchpadMetrics, VirtualOutput};
 use touchpadflow::gesture::{GestureEngine, SessionMode};
 
@@ -15,8 +17,8 @@ fn make_test_engine() -> (GestureEngine, VolumeController, BrightnessController)
         min_y: 0,
         max_y: 1000,
     };
-    let (volume, _) = VolumeController::new();
-    let (brightness, _) = BrightnessController::new();
+    let volume = VolumeController::detached();
+    let brightness = BrightnessController::detached();
     let output = VirtualOutput::dummy();
 
     let engine = GestureEngine::new(config, metrics, volume.clone(), brightness.clone(), output);
@@ -220,25 +222,70 @@ fn test_edge_trigger_threshold_deadband() {
 }
 
 #[test]
-fn test_watchdog_stuck_contact_recovery() {
+fn test_resting_finger_is_not_reset_after_idle_gap() {
+    // Regression: on battery, pads stop reporting a still finger. The old 400ms watchdog
+    // then "lifted" it mid-touch, which made the cursor freeze and jump.
     let (mut engine, _, _) = make_test_engine();
 
-    // Contact down
     engine.handle_event(ev_slot(0)).unwrap();
     engine.handle_event(ev_tracking_id(1)).unwrap();
     engine.handle_event(ev_x(500)).unwrap();
     engine.handle_event(ev_y(500)).unwrap();
     engine.handle_event(ev_syn()).unwrap();
+    assert_eq!(engine.session_mode(), SessionMode::Pointer);
 
-    // Hardware drops release event, 450ms pass with no events
     thread::sleep(Duration::from_millis(450));
 
-    // Watchdog check triggers
-    engine.check_watchdog().unwrap();
+    // Second finger lands at the right edge after the gap: still the same pointer session.
+    engine.handle_event(ev_slot(1)).unwrap();
+    engine.handle_event(ev_tracking_id(2)).unwrap();
+    engine.handle_event(ev_x(950)).unwrap();
+    engine.handle_event(ev_y(500)).unwrap();
+    engine.handle_event(ev_syn()).unwrap();
+    assert_eq!(engine.session_mode(), SessionMode::Pointer);
+}
 
-    assert_eq!(
-        engine.session_mode(),
-        SessionMode::Pointer,
-        "Watchdog should recover and reset to Pointer mode after orphaned contact timeout"
-    );
+#[test]
+fn test_edge_actions_follow_config_and_none_disables_zone() {
+    let config = AppConfig {
+        left_action: EdgeAction::Volume,
+        right_action: EdgeAction::None,
+        ..AppConfig::default()
+    };
+    let metrics = TouchpadMetrics {
+        min_x: 0,
+        max_x: 1000,
+        min_y: 0,
+        max_y: 1000,
+    };
+    let volume = VolumeController::detached();
+    let brightness = BrightnessController::detached();
+    let mut engine =
+        GestureEngine::new(config, metrics, volume, brightness, VirtualOutput::dummy());
+
+    let two_fingers = |engine: &mut GestureEngine, x: i32, id: i32| {
+        engine.handle_event(ev_slot(0)).unwrap();
+        engine.handle_event(ev_tracking_id(id)).unwrap();
+        engine.handle_event(ev_x(x)).unwrap();
+        engine.handle_event(ev_y(500)).unwrap();
+        engine.handle_event(ev_slot(1)).unwrap();
+        engine.handle_event(ev_tracking_id(id + 1)).unwrap();
+        engine.handle_event(ev_x(x + 30)).unwrap();
+        engine.handle_event(ev_y(500)).unwrap();
+        engine.handle_event(ev_syn()).unwrap();
+    };
+    let lift = |engine: &mut GestureEngine| {
+        engine.handle_event(ev_slot(0)).unwrap();
+        engine.handle_event(ev_tracking_id(-1)).unwrap();
+        engine.handle_event(ev_slot(1)).unwrap();
+        engine.handle_event(ev_tracking_id(-1)).unwrap();
+        engine.handle_event(ev_syn()).unwrap();
+    };
+
+    two_fingers(&mut engine, 50, 1);
+    assert_eq!(engine.session_mode(), SessionMode::EdgeVolume);
+    lift(&mut engine);
+
+    two_fingers(&mut engine, 920, 10);
+    assert_eq!(engine.session_mode(), SessionMode::Pointer);
 }

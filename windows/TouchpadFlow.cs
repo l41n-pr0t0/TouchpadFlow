@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Management;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -80,14 +81,57 @@ namespace TouchpadFlow
         internal readonly List<ContactPoint> Contacts = new List<ContactPoint>();
     }
 
+    /// <summary>Shared settings file written by touchpadflow-app (same schema on every OS).</summary>
+    internal sealed class SharedConfig
+    {
+        internal static readonly string Path = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "TouchpadFlow", "touchpadflow.json");
+
+        internal bool Enabled = true;
+        internal double LeftRatio = 0.22, RightRatio = 0.22;
+        internal string LeftAction = "brightness", RightAction = "volume";
+        internal double LeftSensitivity = 1.5, RightSensitivity = 1.5;
+
+        internal static SharedConfig Load()
+        {
+            var c = new SharedConfig();
+            try
+            {
+                if (!File.Exists(Path)) return c;
+                using var doc = JsonDocument.Parse(File.ReadAllText(Path));
+                var r = doc.RootElement;
+                if (r.TryGetProperty("enabled", out var v) && (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False)) c.Enabled = v.GetBoolean();
+                c.LeftRatio = Num(r, "left_edge_ratio", c.LeftRatio, 0.05, 0.45);
+                c.RightRatio = Num(r, "right_edge_ratio", c.RightRatio, 0.05, 0.45);
+                c.LeftSensitivity = Num(r, "left_sensitivity", c.LeftSensitivity, 0.2, 4.0);
+                c.RightSensitivity = Num(r, "right_sensitivity", c.RightSensitivity, 0.2, 4.0);
+                if (r.TryGetProperty("left_action", out v) && v.ValueKind == JsonValueKind.String) c.LeftAction = v.GetString() ?? c.LeftAction;
+                if (r.TryGetProperty("right_action", out v) && v.ValueKind == JsonValueKind.String) c.RightAction = v.GetString() ?? c.RightAction;
+            }
+            catch (Exception ex)
+            {
+                Program.Log($"Config {Path} unreadable, using defaults: {ex.Message}");
+            }
+            return c;
+        }
+
+        private static double Num(JsonElement r, string name, double fallback, double min, double max)
+        {
+            if (r.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number)
+                return Math.Max(min, Math.Min(max, v.GetDouble()));
+            return fallback;
+        }
+    }
+
     internal sealed class FlowGesture
     {
-        internal double EdgeThreshold = 0.18; // 18% width
+        internal SharedConfig Config = SharedConfig.Load();
         internal bool RequireTwoFingers = true;
 
         private bool armed;
         private bool active;
-        private int side; // -1 for left (brightness), 1 for right (volume)
+        private int side; // -1 = left zone, 1 = right zone (action comes from Config)
         private double previousAvgY;
         private double startAvgY;
         private long lastTimestamp;
@@ -136,11 +180,11 @@ namespace TouchpadFlow
 
             if (!armed)
             {
-                // Must initiate strictly inside edge zone
-                if (avgX <= EdgeThreshold)
-                    side = -1; // Left edge: Brightness
-                else if (avgX >= (1.0 - EdgeThreshold))
-                    side = 1;  // Right edge: Volume
+                // Must initiate strictly inside an enabled edge zone
+                if (avgX <= Config.LeftRatio && Config.LeftAction != "none")
+                    side = -1;
+                else if (avgX >= (1.0 - Config.RightRatio) && Config.RightAction != "none")
+                    side = 1;
                 else
                 {
                     Reset();
@@ -153,12 +197,12 @@ namespace TouchpadFlow
             }
 
             // Check if fingers wandered too far into the center
-            if (side < 0 && avgX > (EdgeThreshold + 0.08))
+            if (side < 0 && avgX > (Config.LeftRatio + 0.08))
             {
                 Reset();
                 return 0;
             }
-            if (side > 0 && avgX < (1.0 - EdgeThreshold - 0.08))
+            if (side > 0 && avgX < (1.0 - Config.RightRatio - 0.08))
             {
                 Reset();
                 return 0;
@@ -173,7 +217,8 @@ namespace TouchpadFlow
                 return 0;
             }
 
-            double delta = (previousAvgY - avgY) * 100.0 * 1.5;
+            double sensitivity = side < 0 ? Config.LeftSensitivity : Config.RightSensitivity;
+            double delta = (previousAvgY - avgY) * 100.0 * sensitivity;
             previousAvgY = avgY;
             return delta;
         }
@@ -520,6 +565,7 @@ namespace TouchpadFlow
         private readonly WindowsOsd osd = new WindowsOsd();
         private TouchpadParser parser;
         private bool isPaused;
+        private DateTime configStamp = DateTime.MinValue;
         private double? targetVolume, targetBrightness;
         private readonly object lockObj = new object();
         private readonly AutoResetEvent workerWake = new AutoResetEvent(false);
@@ -570,6 +616,18 @@ namespace TouchpadFlow
 
             trayIcon.ContextMenuStrip = contextMenu;
 
+            // Pick up changes saved by touchpadflow-app without a restart.
+            var configTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            configTimer.Tick += (s, e) =>
+            {
+                DateTime stamp = File.Exists(SharedConfig.Path) ? File.GetLastWriteTimeUtc(SharedConfig.Path) : DateTime.MinValue;
+                if (stamp == configStamp) return;
+                configStamp = stamp;
+                gesture.Config = SharedConfig.Load();
+                gesture.Reset();
+            };
+            configTimer.Start();
+
             RegisterRawInput();
 
             workerThread = new Thread(WorkerLoop)
@@ -596,7 +654,7 @@ namespace TouchpadFlow
 
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == WM_INPUT && !isPaused)
+            if (m.Msg == WM_INPUT && !isPaused && gesture.Config.Enabled)
             {
                 ProcessRawInput(m.LParam);
             }
@@ -648,9 +706,12 @@ namespace TouchpadFlow
 
         private void ApplyDelta(int side, double delta)
         {
+            string action = side < 0 ? gesture.Config.LeftAction : gesture.Config.RightAction;
+            if (action == "none") return;
+            int target = action == "brightness" ? -1 : 1; // OSD/worker use -1 = brightness, 1 = volume
             lock (lockObj)
             {
-                if (side < 0)
+                if (target < 0)
                 {
                     if (!targetBrightness.HasValue)
                         targetBrightness = WindowsControls.AdjustBrightness(null);
@@ -664,7 +725,7 @@ namespace TouchpadFlow
                 }
             }
             workerWake.Set();
-            osd.Display(side);
+            osd.Display(target);
         }
 
         private void WorkerLoop()

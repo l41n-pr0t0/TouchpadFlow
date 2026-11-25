@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use evdev::{AbsoluteAxisCode, EventType, InputEvent, KeyCode, SynchronizationCode};
 
 use crate::action::{BrightnessController, VolumeController, execute_action};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, EdgeAction};
 use crate::device::{TouchpadMetrics, VirtualOutput};
 use crate::error::Result;
 
@@ -23,8 +23,6 @@ pub enum SessionMode {
 pub struct SlotData {
     pub active: bool,
     pub tracking_id: i32,
-    pub start_x: Option<f64>,
-    pub start_y: Option<f64>,
     pub current_x: Option<f64>,
     pub current_y: Option<f64>,
 }
@@ -34,8 +32,6 @@ impl Default for SlotData {
         Self {
             active: false,
             tracking_id: -1,
-            start_x: None,
-            start_y: None,
             current_x: None,
             current_y: None,
         }
@@ -53,6 +49,8 @@ pub struct GestureEngine {
     session_start_time: Instant,
     settle_peak: usize,
     buffer: Vec<InputEvent>,
+    buffer_start_slot: usize,
+    edge_sensitivity: f64,
 
     tap_eligible: bool,
     discrete_fired: bool,
@@ -64,7 +62,6 @@ pub struct GestureEngine {
     volume: VolumeController,
     brightness: BrightnessController,
     output: VirtualOutput,
-    last_event_time: Instant,
 }
 
 impl GestureEngine {
@@ -87,6 +84,8 @@ impl GestureEngine {
             session_start_time: Instant::now(),
             settle_peak: 0,
             buffer: Vec::with_capacity(256),
+            buffer_start_slot: 0,
+            edge_sensitivity: 0.0,
 
             tap_eligible: true,
             discrete_fired: false,
@@ -98,7 +97,6 @@ impl GestureEngine {
             volume,
             brightness,
             output,
-            last_event_time: Instant::now(),
         }
     }
 
@@ -112,13 +110,9 @@ impl GestureEngine {
         self.session_mode
     }
 
-    /// Watchdog to prevent stuck contacts if hardware scan drops a release frame
-    pub fn check_watchdog(&mut self) -> Result<()> {
-        if self.prev_finger_count > 0 && self.last_event_time.elapsed() > Duration::from_millis(400)
-        {
-            self.emergency_reset()?;
-        }
-        Ok(())
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.config.enabled
     }
 
     /// Emergency release of all virtual slots and reset to transparent pass-through
@@ -135,7 +129,7 @@ impl GestureEngine {
             self.output.release_all_slots(&active_ids[..active_count])?;
         }
         for slot in &mut self.slots {
-            *slot = SlotData::default();
+            slot.active = false;
         }
         self.buffer.clear();
         self.session_mode = SessionMode::Pointer;
@@ -150,6 +144,9 @@ impl GestureEngine {
 
     pub fn handle_event(&mut self, ev: InputEvent) -> Result<()> {
         if self.output.touchpad.is_some() {
+            if self.buffer.is_empty() {
+                self.buffer_start_slot = self.current_slot;
+            }
             self.buffer.push(ev);
         }
 
@@ -165,22 +162,13 @@ impl GestureEngine {
                     if val == -1 {
                         slot.active = false;
                     } else {
+                        // Keep last position: the kernel omits X/Y that did not change.
                         slot.active = true;
                         slot.tracking_id = val;
-                        slot.start_x = None;
-                        slot.start_y = None;
-                        slot.current_x = None;
-                        slot.current_y = None;
                     }
                 } else if code == AbsoluteAxisCode::ABS_MT_POSITION_X {
-                    if slot.start_x.is_none() {
-                        slot.start_x = Some(val as f64);
-                    }
                     slot.current_x = Some(val as f64);
                 } else if code == AbsoluteAxisCode::ABS_MT_POSITION_Y {
-                    if slot.start_y.is_none() {
-                        slot.start_y = Some(val as f64);
-                    }
                     slot.current_y = Some(val as f64);
                 }
             }
@@ -194,7 +182,6 @@ impl GestureEngine {
     }
 
     fn process_frame(&mut self) -> Result<()> {
-        self.last_event_time = Instant::now();
         let mut active_indices = [0usize; MAX_SLOTS];
         let mut finger_count = 0;
         for (i, slot) in self.slots.iter().enumerate() {
@@ -203,23 +190,32 @@ impl GestureEngine {
                 finger_count += 1;
             }
         }
+        let active = &active_indices[..finger_count];
 
         if finger_count != self.prev_finger_count {
-            self.handle_finger_transition(finger_count, &active_indices[..finger_count])?;
+            self.handle_finger_transition(finger_count, active)?;
         }
 
-        if self.session_mode == SessionMode::Settling {
-            let elapsed = self.session_start_time.elapsed();
-            if elapsed >= Duration::from_millis(self.config.settle_window_ms) {
-                self.resolve_settle(&active_indices[..finger_count])?;
-            }
+        // A tap can be just a down and an up frame (idle pads send nothing in between),
+        // so a session that ends while settling must still resolve and be delivered.
+        if self.session_mode == SessionMode::Settling
+            && (finger_count == 0
+                || self.session_start_time.elapsed()
+                    >= Duration::from_millis(self.config.settle_window_ms))
+        {
+            self.resolve_settle(active);
         }
 
         if finger_count > 0 {
-            self.track_motion(&active_indices[..finger_count])?;
+            self.track_motion(active)?;
         }
 
+        // Forward before ending the session so the lift frame reaches the virtual pad.
         self.handle_passthrough()?;
+
+        if finger_count == 0 && self.prev_finger_count > 0 {
+            self.on_session_end()?;
+        }
         self.prev_finger_count = finger_count;
         Ok(())
     }
@@ -235,94 +231,91 @@ impl GestureEngine {
             self.start_avg_x = None;
             self.start_avg_y = None;
 
-            if count == 2 {
-                self.check_two_finger_edge(active_indices);
-            } else if count >= 3 {
-                self.session_mode = if count == 3 {
-                    SessionMode::Gesture3
-                } else {
-                    SessionMode::Gesture4
-                };
-            } else {
-                self.session_mode = SessionMode::Settling;
+            match count {
+                // Only touches that land in an edge zone wait for a possible second finger;
+                // everything else goes to the pointer immediately (no added latency).
+                1 if self.edge_zone_action(active_indices[0]).is_some() => {
+                    self.session_mode = SessionMode::Settling;
+                }
+                1 => self.session_mode = SessionMode::Pointer,
+                2 => self.check_two_finger_edge(active_indices),
+                _ => self.enter_gesture(count, active_indices)?,
             }
         } else if count > self.settle_peak {
             self.settle_peak = count;
-            if self.session_mode == SessionMode::Settling {
-                if count == 2 {
-                    self.check_two_finger_edge(active_indices);
-                } else if count == 3 {
-                    self.session_mode = SessionMode::Gesture3;
-                } else if count >= 4 {
-                    self.session_mode = SessionMode::Gesture4;
+            match self.session_mode {
+                SessionMode::Settling if count == 2 => self.check_two_finger_edge(active_indices),
+                SessionMode::Settling | SessionMode::Pointer if count >= 3 => {
+                    self.enter_gesture(count, active_indices)?;
                 }
+                _ => {}
             }
         }
-
-        if count == 0 {
-            self.on_session_end()?;
-        }
-
         Ok(())
+    }
+
+    /// Switch to a 3/4-finger gesture and lift any touches already sent to the virtual pad.
+    fn enter_gesture(&mut self, count: usize, active_indices: &[usize]) -> Result<()> {
+        if self.session_mode == SessionMode::Pointer {
+            self.output.release_all_slots(active_indices)?;
+        }
+        self.session_mode = if count == 3 {
+            SessionMode::Gesture3
+        } else {
+            SessionMode::Gesture4
+        };
+        Ok(())
+    }
+
+    /// Which edge action (if any) a single finger in `slot` is resting in.
+    fn edge_zone_action(&self, slot: usize) -> Option<(SessionMode, f64)> {
+        let x = self.slots[slot].current_x?;
+        let c = &self.config;
+        if self.metrics.is_left_edge(x, c.left_edge_ratio) {
+            edge_mode(c.left_action, c.left_sensitivity)
+        } else if self.metrics.is_right_edge(x, c.right_edge_ratio) {
+            edge_mode(c.right_action, c.right_sensitivity)
+        } else {
+            None
+        }
     }
 
     fn check_two_finger_edge(&mut self, active_indices: &[usize]) {
-        if active_indices.len() == 2 {
-            let slot0 = &self.slots[active_indices[0]];
-            let slot1 = &self.slots[active_indices[1]];
-
-            if let (Some(x0), Some(x1)) = (slot0.current_x, slot1.current_x) {
-                let left_r = self.config.left_edge_ratio;
-                let right_r = self.config.right_edge_ratio;
-
-                let avg_x = (x0 + x1) / 2.0;
-
-                // Centroid edge detection with edge tolerance for natural finger width
-                let is_left = self.metrics.is_left_edge(avg_x, left_r)
-                    || self.metrics.is_left_edge(x0, left_r * 0.70)
-                    || self.metrics.is_left_edge(x1, left_r * 0.70);
-                let is_right = self.metrics.is_right_edge(avg_x, right_r)
-                    || self.metrics.is_right_edge(x0, right_r * 0.70)
-                    || self.metrics.is_right_edge(x1, right_r * 0.70);
-
-                if is_left {
-                    self.session_mode = SessionMode::EdgeBrightness;
-                    self.buffer.clear();
-                    return;
-                }
-
-                if is_right {
-                    self.session_mode = SessionMode::EdgeVolume;
-                    self.buffer.clear();
-                    return;
-                }
-            }
-        }
         self.session_mode = SessionMode::Pointer;
+        let [i0, i1] = active_indices else { return };
+        let (Some(x0), Some(x1)) = (self.slots[*i0].current_x, self.slots[*i1].current_x) else {
+            return;
+        };
+        let c = &self.config;
+        let avg_x = (x0 + x1) / 2.0;
+
+        // Centroid edge detection with edge tolerance for natural finger width
+        let in_zone = |ratio: f32, test: fn(&TouchpadMetrics, f64, f32) -> bool| {
+            test(&self.metrics, avg_x, ratio)
+                || test(&self.metrics, x0, ratio * 0.70)
+                || test(&self.metrics, x1, ratio * 0.70)
+        };
+
+        let picked = if in_zone(c.left_edge_ratio, TouchpadMetrics::is_left_edge) {
+            edge_mode(c.left_action, c.left_sensitivity)
+        } else if in_zone(c.right_edge_ratio, TouchpadMetrics::is_right_edge) {
+            edge_mode(c.right_action, c.right_sensitivity)
+        } else {
+            None
+        };
+        if let Some((mode, sensitivity)) = picked {
+            self.session_mode = mode;
+            self.edge_sensitivity = sensitivity;
+        }
     }
 
-    fn resolve_settle(&mut self, active_indices: &[usize]) -> Result<()> {
-        if self.settle_peak >= 3 {
-            self.session_mode = if self.settle_peak == 3 {
-                SessionMode::Gesture3
-            } else {
-                SessionMode::Gesture4
-            };
-            self.output.release_all_slots(active_indices)?;
-            self.buffer.clear();
-        } else if self.settle_peak == 2 {
+    fn resolve_settle(&mut self, active_indices: &[usize]) {
+        // Nothing was forwarded while settling, so there is nothing to release here.
+        if self.settle_peak == 2 {
             self.check_two_finger_edge(active_indices);
-            if self.session_mode != SessionMode::Pointer {
-                self.output.release_all_slots(active_indices)?;
-                self.buffer.clear();
-            } else {
-                self.flush_buffer()?;
-            }
         } else {
             self.session_mode = SessionMode::Pointer;
-            self.flush_buffer()?;
         }
-        Ok(())
     }
 
     fn track_motion(&mut self, active_indices: &[usize]) -> Result<()> {
@@ -367,17 +360,14 @@ impl GestureEngine {
         };
 
         match self.session_mode {
-            SessionMode::EdgeVolume => {
-                // Enforce edge_trigger_threshold as activation deadband
-                if total_dy.abs() >= self.config.edge_trigger_threshold {
-                    let step = -dy * (self.config.volume_step / 10.0);
+            SessionMode::EdgeVolume | SessionMode::EdgeBrightness
+                if total_dy.abs() >= self.config.edge_trigger_threshold =>
+            {
+                // Normalised by pad height so sensitivity means the same on every touchpad.
+                let step = -dy / self.metrics.height() * self.edge_sensitivity;
+                if self.session_mode == SessionMode::EdgeVolume {
                     self.volume.adjust(step);
-                }
-            }
-            SessionMode::EdgeBrightness => {
-                // Enforce edge_trigger_threshold as activation deadband
-                if total_dy.abs() >= self.config.edge_trigger_threshold {
-                    let step = -dy * (self.config.brightness_step / 10.0);
+                } else {
                     self.brightness.adjust(step);
                 }
             }
@@ -390,7 +380,7 @@ impl GestureEngine {
                             self.fire_action("swipe3_left")?;
                         }
                     } else if total_dy.abs() > total_dx.abs() {
-                        let step = -dy * (self.config.volume_step / 10.0);
+                        let step = -dy / self.metrics.height() * self.config.right_sensitivity;
                         self.volume.adjust(step);
                     }
                     self.discrete_fired = true;
@@ -431,9 +421,6 @@ impl GestureEngine {
             }
         }
 
-        for slot in &mut self.slots {
-            *slot = SlotData::default();
-        }
         self.buffer.clear();
         self.session_mode = SessionMode::Pointer;
         self.settle_peak = 0;
@@ -466,14 +453,19 @@ impl GestureEngine {
     fn handle_passthrough(&mut self) -> Result<()> {
         match self.session_mode {
             SessionMode::Settling => {}
-            SessionMode::Pointer => {
-                self.flush_buffer()?;
-            }
+            SessionMode::Pointer => self.flush_buffer()?,
             SessionMode::EdgeVolume
             | SessionMode::EdgeBrightness
             | SessionMode::Gesture3
             | SessionMode::Gesture4 => {
-                self.buffer.clear();
+                // Drop touches/clicks but keep positions in sync, otherwise the next
+                // pointer touch starts from a stale position and the cursor jumps.
+                self.buffer.retain(|ev| {
+                    ev.event_type() != EventType::KEY
+                        && !(ev.event_type() == EventType::ABSOLUTE
+                            && ev.code() == AbsoluteAxisCode::ABS_MT_TRACKING_ID.0)
+                });
+                self.flush_buffer()?;
             }
         }
         Ok(())
@@ -482,8 +474,18 @@ impl GestureEngine {
     fn flush_buffer(&mut self) -> Result<()> {
         if !self.buffer.is_empty() {
             let evs = std::mem::take(&mut self.buffer);
-            self.output.forward_raw(&evs)?;
+            self.output.forward_raw(self.buffer_start_slot, &evs)?;
+            self.buffer = evs;
+            self.buffer.clear();
         }
         Ok(())
+    }
+}
+
+fn edge_mode(action: EdgeAction, sensitivity: f64) -> Option<(SessionMode, f64)> {
+    match action {
+        EdgeAction::Volume => Some((SessionMode::EdgeVolume, sensitivity)),
+        EdgeAction::Brightness => Some((SessionMode::EdgeBrightness, sensitivity)),
+        EdgeAction::None => None,
     }
 }

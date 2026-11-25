@@ -30,11 +30,13 @@ if pgrep -x touchpadflow >/dev/null 2>&1; then
     pkill -x touchpadflow || true
 fi
 
-# 3. Remove binary
-if [ -f "$BIN_PATH" ]; then
-    rm -f "$BIN_PATH"
-    echo "[OK] Removed binary: $BIN_PATH"
-fi
+# 3. Remove binaries and launcher entry
+for f in "$BIN_PATH" "$HOME/.local/bin/touchpadflow-app" "$HOME/.local/share/applications/touchpadflow.desktop"; do
+    if [ -f "$f" ]; then
+        rm -f "$f"
+        echo "[OK] Removed $f"
+    fi
+done
 
 # 4. Clean runtime IPC sockets
 if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -S "$XDG_RUNTIME_DIR/touchpadflow.sock" ]; then

@@ -11,10 +11,18 @@ echo "Building release binary with Rust..."
 cargo build --release --manifest-path "$SCRIPT_DIR/Cargo.toml"
 
 mkdir -p "$BIN_DEST"
-cp "$SCRIPT_DIR/target/release/touchpadflow" "$BIN_DEST/touchpadflow.tmp"
-mv -f "$BIN_DEST/touchpadflow.tmp" "$BIN_DEST/touchpadflow"
-chmod 755 "$BIN_DEST/touchpadflow"
-echo "[OK] Installed binary to $BIN_DEST/touchpadflow"
+for bin in touchpadflow touchpadflow-app; do
+    cp "$SCRIPT_DIR/target/release/$bin" "$BIN_DEST/$bin.tmp"
+    mv -f "$BIN_DEST/$bin.tmp" "$BIN_DEST/$bin"
+    chmod 755 "$BIN_DEST/$bin"
+    echo "[OK] Installed $BIN_DEST/$bin"
+done
+
+# App launcher entry (KDE, GNOME and other freedesktop desktops)
+APPS_DEST="$HOME/.local/share/applications"
+mkdir -p "$APPS_DEST"
+sed "s|@BIN@|$BIN_DEST/touchpadflow-app|" "$SCRIPT_DIR/linux/touchpadflow.desktop" > "$APPS_DEST/touchpadflow.desktop"
+echo "[OK] Added TouchpadFlow to the app launcher"
 
 # Install udev rule for session-based uaccess (avoids broad 'input' group security hazard)
 if [ -d "/etc/udev/rules.d" ]; then
@@ -52,6 +60,9 @@ echo ""
 echo "=== Installation complete ==="
 echo "Start daemon with systemd:"
 echo "  systemctl --user enable --now touchpadflow.service"
+echo ""
+echo "Change settings with the app:"
+echo "  touchpadflow-app"
 echo ""
 echo "Or run standalone in background (non-systemd distros):"
 echo "  touchpadflow --daemon"

@@ -9,10 +9,10 @@ use std::time::Duration;
 
 #[must_use]
 pub fn socket_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        if !runtime_dir.is_empty() {
-            return PathBuf::from(runtime_dir).join("touchpadflow.sock");
-        }
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR")
+        && !runtime_dir.is_empty()
+    {
+        return PathBuf::from(runtime_dir).join("touchpadflow.sock");
     }
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     PathBuf::from(format!("/tmp/touchpadflow-{}.sock", user))

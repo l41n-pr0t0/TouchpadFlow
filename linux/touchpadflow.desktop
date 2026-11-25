@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TouchpadFlow
+GenericName=Touchpad Gestures
+Comment=Edge-slide brightness and volume, zone size and sensitivity
+Exec=@BIN@
+Icon=input-touchpad
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=touchpad;gesture;brightness;volume;
+StartupWMClass=touchpadflow

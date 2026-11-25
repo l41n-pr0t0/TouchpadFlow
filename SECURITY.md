@@ -21,7 +21,6 @@ If you discover a security vulnerability, please **do not open a public issue**.
    - It **never intercepts or logs keystrokes**.
    - Ephemeral memory: coordinates are held only in stack buffers and discarded upon contact release.
    - Network isolation: application and systemd user services enforce `IPAddressDeny=any`.
-3. **Control Center Web Security:**
-   - Local interface binds strictly to `127.0.0.1`.
-   - Cryptographic session tokens are required for all configuration and service control requests.
-   - `Host` and `Origin` headers are validated against CSRF attacks.
+3. **No web surface:**
+   - Settings are edited in the native `touchpadflow-app` window; nothing listens on a TCP port.
+   - The app talks to the daemon only through the per-user Unix socket in `$XDG_RUNTIME_DIR`.

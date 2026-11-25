@@ -1,20 +1,19 @@
+use crate::config::{EdgeAction, SharedConfig};
 use crate::controls::{MacAudio, MacBrightness};
 use crate::multitouch::MTContact;
 
 pub struct MacGestureEngine {
-    left_edge_ratio: f32,
-    right_edge_ratio: f32,
-    active_side: i32, // -1: left (brightness), 1: right (volume), 0: none
+    pub config: SharedConfig,
+    active_side: i32, // -1: left zone, 1: right zone, 0: none
     start_y: f32,
     previous_y: f32,
     current_volume: f32,
 }
 
 impl MacGestureEngine {
-    pub fn new(left_edge_ratio: f32, right_edge_ratio: f32) -> Self {
+    pub fn new(config: SharedConfig) -> Self {
         Self {
-            left_edge_ratio,
-            right_edge_ratio,
+            config,
             active_side: 0,
             start_y: 0.0,
             previous_y: 0.0,
@@ -30,7 +29,7 @@ impl MacGestureEngine {
             .collect();
 
         // Two-finger mode default
-        if active.len() != 2 {
+        if !self.config.enabled || active.len() != 2 {
             if self.active_side != 0 && active.is_empty() {
                 self.active_side = 0;
             }
@@ -40,17 +39,18 @@ impl MacGestureEngine {
         let avg_x = (active[0].normalized_position.x + active[1].normalized_position.x) / 2.0;
         let avg_y = (active[0].normalized_position.y + active[1].normalized_position.y) / 2.0;
 
+        let c = &self.config;
         if self.active_side == 0 {
-            if avg_x <= self.left_edge_ratio {
-                self.active_side = -1; // Brightness
-                self.start_y = avg_y;
-                self.previous_y = avg_y;
-            } else if avg_x >= (1.0 - self.right_edge_ratio) {
-                self.active_side = 1; // Volume
-                self.start_y = avg_y;
-                self.previous_y = avg_y;
-                self.current_volume = MacAudio::get_volume();
+            if avg_x <= c.left_edge_ratio && c.left_action != EdgeAction::None {
+                self.active_side = -1;
+            } else if avg_x >= (1.0 - c.right_edge_ratio) && c.right_action != EdgeAction::None {
+                self.active_side = 1;
+            } else {
+                return;
             }
+            self.start_y = avg_y;
+            self.previous_y = avg_y;
+            self.current_volume = MacAudio::get_volume();
             return;
         }
 
@@ -59,13 +59,18 @@ impl MacGestureEngine {
             return;
         }
 
-        if self.active_side == 1 {
-            // Volume
-            self.current_volume = (self.current_volume + dy * 0.8).clamp(0.0, 1.0);
-            MacAudio::set_volume(self.current_volume);
-        } else if self.active_side == -1 {
-            // Brightness
-            MacBrightness::set_brightness(dy);
+        let (action, sensitivity) = if self.active_side < 0 {
+            (c.left_action, c.left_sensitivity)
+        } else {
+            (c.right_action, c.right_sensitivity)
+        };
+        match action {
+            EdgeAction::Volume => {
+                self.current_volume = (self.current_volume + dy * sensitivity).clamp(0.0, 1.0);
+                MacAudio::set_volume(self.current_volume);
+            }
+            EdgeAction::Brightness => MacBrightness::set_brightness(dy),
+            EdgeAction::None => {}
         }
 
         self.previous_y = avg_y;

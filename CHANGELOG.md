@@ -2,7 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - 2026-11-24
+## [Unreleased] - 2026-11-25
+
+### Fixed
+- **Cursor jumps / lag on battery:** removed the 400 ms "stuck contact" watchdog. Idle pads (common on battery power saving) send no frames for a resting finger, so the watchdog lifted real touches mid-gesture.
+- **Finger-lift frames were never forwarded:** the session-end frame was discarded before passthrough, so libinput kept a phantom finger down.
+- **Virtual touchpad drift:** swallowed edge/gesture sessions now still forward positions (minus touches and clicks), and forwarded batches re-select their slot, so the next touch no longer starts from a stale position.
+- **Lost positions:** slot X/Y are kept across touches (the kernel only re-sends values that changed).
+- **Pointer latency:** single-finger touches outside the edge zones go to the pointer immediately instead of waiting 25 ms.
+- **Edge taps lost:** a session that ends while settling is now delivered.
+- **Settings ignored by the service:** the daemon now reads `~/.config/touchpadflow.json` by default.
+- **Invalid IPC status JSON** (device path was debug-quoted).
+- **Shutdown hang:** SIGTERM no longer waits for the next touch.
+- **Tests changed real volume/brightness:** tests now use detached controllers.
+- **macOS crate did not build** (missing `libc` dependency).
+
+### Changed
+- Replaced the localhost web Control Center (`--gui`, `--port`) with the native `touchpadflow-app`.
+- Edge zones are configurable per side: `left_action` / `right_action` (`brightness`, `volume`, `none`) and `left_sensitivity` / `right_sensitivity` (normalised to pad height). `volume_step` / `brightness_step` are gone.
+- New `enabled` switch, honoured by the Linux, macOS and Windows engines; macOS and Windows reload the shared settings file automatically.
+
 
 ### Added
 - **Unix Domain Socket IPC:** Added dedicated IPC socket at `$XDG_RUNTIME_DIR/touchpadflow.sock` supporting `pause`, `resume`, `toggle`, `status`, and `reload` commands.

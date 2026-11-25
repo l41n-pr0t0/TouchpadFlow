@@ -1,8 +1,10 @@
+#[cfg(target_os = "linux")]
 pub mod action;
 pub mod config;
+#[cfg(target_os = "linux")]
 pub mod device;
 pub mod error;
+#[cfg(target_os = "linux")]
 pub mod gesture;
-pub mod gui;
-pub mod gui_assets;
+#[cfg(unix)]
 pub mod ipc;

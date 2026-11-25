@@ -1,3 +1,4 @@
+mod config;
 mod controls;
 mod gesture;
 mod multitouch;
@@ -29,25 +30,22 @@ extern "C" fn contact_callback(
 
 #[derive(Parser, Debug)]
 #[command(name = "touchpadflow-macos")]
-#[command(about = "Native macOS trackpad edge gesture daemon for volume and brightness")]
-struct Cli {
-    #[arg(long, default_value_t = 0.20, help = "Left edge strip width ratio (0.0 to 0.4)")]
-    left_edge: f32,
-
-    #[arg(long, default_value_t = 0.20, help = "Right edge strip width ratio (0.0 to 0.4)")]
-    right_edge: f32,
-}
+#[command(
+    about = "Native macOS trackpad edge gesture daemon. Settings come from touchpadflow-app \
+             (~/.config/touchpadflow.json) and reload automatically."
+)]
+struct Cli {}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Cli::parse();
+    Cli::parse();
 
+    let cfg = config::load();
     println!("=== TouchpadFlow for macOS ===");
-    println!("Left Edge (Brightness): <= {:.0}%", args.left_edge * 100.0);
-    println!("Right Edge (Volume):    >= {:.0}%", (1.0 - args.right_edge) * 100.0);
+    println!("Settings: {} ({cfg:?})", config::path().display());
 
     {
         let mut lock = GESTURE_ENGINE.lock().unwrap();
-        *lock = Some(MacGestureEngine::new(args.left_edge, args.right_edge));
+        *lock = Some(MacGestureEngine::new(cfg));
     }
 
     let _dev = match MultitouchDevice::open_default(contact_callback) {
@@ -65,8 +63,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("TouchpadFlow daemon active. Slide two fingers on trackpad edges.");
     println!("Press Ctrl+C to stop.");
 
-    // Keep active
+    // Re-read the settings file whenever the app saves it.
+    let mut stamp = config::modified();
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let now = config::modified();
+        if now != stamp {
+            stamp = now;
+            if let Ok(mut lock) = GESTURE_ENGINE.lock() {
+                if let Some(engine) = lock.as_mut() {
+                    engine.config = config::load();
+                }
+            }
+        }
     }
 }

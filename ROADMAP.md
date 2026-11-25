@@ -7,7 +7,7 @@
 - [x] Natural finger centroid tracking for left and right edges.
 - [x] Enforcement of `edge_trigger_threshold` as an activation deadband.
 - [x] Systemd sandboxing hardening (`ReadWritePaths=/sys/class/backlight` and `ProtectKernelTunables=no`).
-- [x] Hardened Control Center GUI: random session token authentication, Origin/Host validation, and streaming Content-Length parsing.
+- [x] Native cross-platform settings app (`touchpadflow-app`, egui) replacing the localhost web Control Center.
 - [x] Safe transactional configuration updating with atomic file renaming.
 - [x] Dual-GPU / hybrid backlight auto-discovery and synchronization (Intel + NVIDIA).
 
