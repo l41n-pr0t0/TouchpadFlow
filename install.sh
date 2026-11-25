@@ -23,14 +23,29 @@ OS="$(uname -s)"
 ARCH="$(uname -m)"
 case "$ARCH" in amd64) ARCH=x86_64 ;; arm64) ARCH=aarch64 ;; esac
 
-say() { printf '%s\n' "$*"; }
-die() { say "error: $*" >&2; exit 1; }
+# Colour only on a real terminal, and never when NO_COLOR is set (https://no-color.org).
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+    B=$'\e[1m' D=$'\e[2m' R=$'\e[0m'
+    RED=$'\e[31m' GRN=$'\e[32m' YEL=$'\e[33m' CYN=$'\e[36m'
+else
+    B='' D='' R='' RED='' GRN='' YEL='' CYN=''
+fi
+step() { printf '\n%s==>%s %s%s%s\n' "$CYN$B" "$R" "$B" "$*" "$R"; }
+ok() { printf '  %s✓%s %s\n' "$GRN$B" "$R" "$*"; }
+warn() { printf '  %s!%s %s\n' "$YEL$B" "$R" "$*"; }
+die() { printf '\n  %s✗ error:%s %s\n' "$RED$B" "$R" "$*" >&2; exit 1; }
+banner() {
+    printf '\n%s  ┌──────────────────────────────┐%s\n' "$CYN" "$R"
+    printf '%s  │%s  %sTOUCHPADFLOW%s %sinstaller%s      %s│%s\n' "$CYN" "$R" "$B" "$R" "$D" "$R" "$CYN" "$R"
+    printf '%s  └──────────────────────────────┘%s\n' "$CYN" "$R"
+    printf '  %s%s%s\n' "$D" "$*" "$R"
+}
 has() { command -v "$1" >/dev/null 2>&1; }
 as_root() {
     if [ "$(id -u)" -eq 0 ]; then "$@"
     elif has sudo; then sudo "$@"
     elif has doas; then doas "$@"
-    else say "[!] Needs root, run manually: $*"; return 1
+    else warn "Needs root, run manually: $*"; return 1
     fi
 }
 # SIGTERM makes the engine exit within ~0.5s; wait so callers see it gone.
@@ -58,8 +73,12 @@ stage_download() {
         *) die "unsupported system $OS (on Windows use install.ps1)" ;;
     esac
     local url="https://github.com/$REPO/releases/latest/download/$asset"
-    say "Downloading $url"
-    curl -fsSL --retry 3 -o "$WORK/$asset" "$url" \
+    step "Downloading $asset"
+    printf '  %s%s%s\n' "$D" "$url" "$R"
+    # Progress bar on a terminal, silent otherwise.
+    local progress=-sS
+    [ -t 2 ] && progress=--progress-bar
+    curl -fL "$progress" --retry 3 -o "$WORK/$asset" "$url" \
         || die "no prebuilt download for $OS/$ARCH. Clone the repo and run: ./install.sh --from-source"
     tar -xzf "$WORK/$asset" -C "$WORK"
 }
@@ -86,31 +105,35 @@ install_linux() {
     "$STAGE/touchpadflow" --help >/dev/null 2>&1 \
         || die "the prebuilt binary does not run on this distro; clone the repo and run ./install.sh --from-source"
 
+    step "Installing the app"
     put "$STAGE/touchpadflow" "$BIN/touchpadflow" 755
     put "$STAGE/touchpadflow-app" "$BIN/touchpadflow-app" 755
     sed "s|@BIN@|$BIN/touchpadflow-app|" "$STAGE/touchpadflow.desktop" > "$WORK/app.desktop"
     put "$WORK/app.desktop" "$HOME/.local/share/applications/touchpadflow.desktop"
-    say "[OK] Installed touchpadflow and touchpadflow-app to $BIN"
+    ok "Installed touchpadflow and touchpadflow-app to $BIN"
 
     # Session-only access to the touchpad and uinput (no 'input' group needed).
-    say "Installing device permissions (sudo may ask for your password)..."
+    step "Touchpad permissions"
+    printf '  %ssudo may ask for your password once%s\n' "$D" "$R"
     # Keep a copy so the manual command printed on failure points at a real file.
     put "$STAGE/70-touchpadflow.rules" "$HOME/.local/share/touchpadflow/70-touchpadflow.rules"
     if as_root install -m 644 "$HOME/.local/share/touchpadflow/70-touchpadflow.rules" "$RULES"; then
         as_root modprobe uinput 2>/dev/null || true
-        as_root udevadm control --reload-rules || true
-        as_root udevadm trigger || true
-        say "[OK] Installed $RULES"
+        as_root udevadm control --reload-rules >/dev/null 2>&1 || true
+        # Re-apply only to the devices the rule covers, quietly.
+        as_root udevadm trigger --subsystem-match=input --subsystem-match=misc --subsystem-match=backlight >/dev/null 2>&1 || true
+        ok "Installed $RULES"
     fi
 
+    step "Starting the engine"
     if has systemctl && systemctl --user show-environment >/dev/null 2>&1; then
         put "$STAGE/touchpadflow.service" "$HOME/.config/systemd/user/touchpadflow.service"
         systemctl --user daemon-reload
         systemctl --user enable touchpadflow.service >/dev/null 2>&1 || true
         if systemctl --user restart touchpadflow.service; then
-            say "[OK] Engine running as systemd user service"
+            ok "Engine running as systemd user service"
         else
-            say "[!] Engine did not start; see: journalctl --user -u touchpadflow"
+            warn "Engine did not start; see: journalctl --user -u touchpadflow"
         fi
     else
         # Non-systemd distros: start with the desktop session instead.
@@ -125,11 +148,12 @@ EOF
         put "$WORK/autostart.desktop" "$HOME/.config/autostart/touchpadflow-engine.desktop"
         stop_engine
         "$BIN/touchpadflow" --daemon >/dev/null 2>&1
-        say "[OK] Engine started and added to session autostart"
+        ok "Engine started and added to session autostart"
     fi
 }
 
 install_macos() {
+    step "Installing the app"
     put "$STAGE/touchpadflow-macos" "$BIN/touchpadflow-macos" 755
 
     # Minimal .app bundle so the settings app shows up in Launchpad/Spotlight.
@@ -149,8 +173,9 @@ EOF
     xattr -dr com.apple.quarantine "$MAC_APP" "$BIN/touchpadflow-macos" 2>/dev/null || true
     codesign --force -s - "$MAC_APP" >/dev/null 2>&1 || true
     ln -sf "$MAC_APP/Contents/MacOS/touchpadflow-app" "$BIN/touchpadflow-app"
-    say "[OK] Installed $MAC_APP and $BIN/touchpadflow-macos"
+    ok "Installed $MAC_APP and $BIN/touchpadflow-macos"
 
+    step "Starting the engine"
     mkdir -p "$(dirname "$LAUNCH_AGENT")"
     cat > "$LAUNCH_AGENT" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -164,11 +189,12 @@ EOF
 EOF
     launchctl bootout "gui/$(id -u)" "$LAUNCH_AGENT" 2>/dev/null || true
     launchctl bootstrap "gui/$(id -u)" "$LAUNCH_AGENT"
-    say "[OK] Engine running as a LaunchAgent"
-    say "[!] Allow 'touchpadflow-macos' under System Settings > Privacy & Security > Accessibility for brightness control."
+    ok "Engine running as a LaunchAgent"
+    warn "Allow 'touchpadflow-macos' under System Settings > Privacy & Security > Accessibility for brightness control."
 }
 
 uninstall() {
+    step "Removing TouchpadFlow"
     if [ "$OS" = Darwin ]; then
         launchctl bootout "gui/$(id -u)" "$LAUNCH_AGENT" 2>/dev/null || true
         rm -rf "$LAUNCH_AGENT" "$MAC_APP" "$BIN/touchpadflow-macos" "$BIN/touchpadflow-app"
@@ -188,7 +214,7 @@ uninstall() {
             as_root rm -f "$RULES" && as_root udevadm control --reload-rules || true
         fi
     fi
-    say "[OK] TouchpadFlow removed. Your settings file (~/.config/touchpadflow.json) was kept."
+    ok "TouchpadFlow removed. Your settings file (~/.config/touchpadflow.json) was kept."
 }
 
 if [ "$MODE" = uninstall ]; then
@@ -196,13 +222,13 @@ if [ "$MODE" = uninstall ]; then
     exit 0
 fi
 
-say "=== TouchpadFlow installer ($OS $ARCH) ==="
+banner "$OS $ARCH"
 if [ "$MODE" = source ]; then stage_source; else stage_download; fi
 case "$OS" in
     Linux) install_linux ;;
     Darwin) install_macos ;;
 esac
 
-case ":$PATH:" in *":$BIN:"*) ;; *) say "[!] Add $BIN to your PATH to run touchpadflow from a terminal." ;; esac
-say ""
-say "Done. Open \"TouchpadFlow\" from your app launcher (or run touchpadflow-app) to change settings."
+case ":$PATH:" in *":$BIN:"*) ;; *) warn "Add $BIN to your PATH to run touchpadflow from a terminal." ;; esac
+printf '\n%s%s✓ Done.%s Open %sTouchpadFlow%s from your app menu to change settings.\n' "$GRN" "$B" "$R" "$B" "$R"
+printf '  %sSlide two fingers on the left edge for brightness, right edge for volume.%s\n\n' "$D" "$R"
