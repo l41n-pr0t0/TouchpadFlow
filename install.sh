@@ -29,8 +29,14 @@ has() { command -v "$1" >/dev/null 2>&1; }
 as_root() {
     if [ "$(id -u)" -eq 0 ]; then "$@"
     elif has sudo; then sudo "$@"
+    elif has doas; then doas "$@"
     else say "[!] Needs root, run manually: $*"; return 1
     fi
+}
+# SIGTERM makes the engine exit within ~0.5s; wait so callers see it gone.
+stop_engine() {
+    pkill -x touchpadflow 2>/dev/null || return 0
+    for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -x touchpadflow >/dev/null || return 0; sleep 0.2; done
 }
 # Copy via temp file + rename so a running binary is replaced safely.
 put() { install -d "$(dirname "$2")"; cp "$1" "$2.tmp"; chmod "${3:-644}" "$2.tmp"; mv -f "$2.tmp" "$2"; }
@@ -88,7 +94,9 @@ install_linux() {
 
     # Session-only access to the touchpad and uinput (no 'input' group needed).
     say "Installing device permissions (sudo may ask for your password)..."
-    if as_root install -m 644 "$STAGE/70-touchpadflow.rules" "$RULES"; then
+    # Keep a copy so the manual command printed on failure points at a real file.
+    put "$STAGE/70-touchpadflow.rules" "$HOME/.local/share/touchpadflow/70-touchpadflow.rules"
+    if as_root install -m 644 "$HOME/.local/share/touchpadflow/70-touchpadflow.rules" "$RULES"; then
         as_root modprobe uinput 2>/dev/null || true
         as_root udevadm control --reload-rules || true
         as_root udevadm trigger || true
@@ -115,8 +123,8 @@ NoDisplay=true
 X-GNOME-Autostart-enabled=true
 EOF
         put "$WORK/autostart.desktop" "$HOME/.config/autostart/touchpadflow-engine.desktop"
-        pkill -x touchpadflow 2>/dev/null || true
-        "$BIN/touchpadflow" --daemon >/dev/null
+        stop_engine
+        "$BIN/touchpadflow" --daemon >/dev/null 2>&1
         say "[OK] Engine started and added to session autostart"
     fi
 }
@@ -170,7 +178,8 @@ uninstall() {
             rm -f "$HOME/.config/systemd/user/touchpadflow.service"
             systemctl --user daemon-reload 2>/dev/null || true
         fi
-        pkill -x touchpadflow 2>/dev/null || true
+        stop_engine
+        rm -rf "$HOME/.local/share/touchpadflow"
         rm -f "$BIN/touchpadflow" "$BIN/touchpadflow-app" \
               "$HOME/.local/share/applications/touchpadflow.desktop" \
               "$HOME/.config/autostart/touchpadflow-engine.desktop"

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -148,7 +148,13 @@ pub fn main() -> Result<()> {
         if !args.grab {
             child_cmd.arg("--grab=false");
         }
-        let child = child_cmd.spawn().map_err(AppError::Io)?;
+        // Detach from the terminal: an inherited stdout/stderr would spam it and keep pipes open.
+        let child = child_cmd
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(AppError::Io)?;
         println!(
             "TouchpadFlow daemon spawned in background with PID: {}",
             child.id()
