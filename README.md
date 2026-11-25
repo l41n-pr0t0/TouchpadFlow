@@ -1,192 +1,201 @@
-# TouchpadFlow
+<p align="center">
+  <img src="docs/images/hero.png" alt="The TouchpadFlow settings app, in light and dark mode" width="100%">
+</p>
 
-TouchpadFlow is a low-latency touchpad gesture daemon written in Rust for Linux and KDE Plasma 6 (Wayland). It intercepts physical multitouch events directly from `/dev/input/event*`, routes edge slide gestures to hardware volume and display brightness controls, passes normal pointer and scrolling motions through a virtual UInput device, and executes 3- and 4-finger window/media gestures.
+<h1 align="center">TouchpadFlow</h1>
+
+<p align="center">
+  <b>Slide two fingers along the edge of your touchpad to change brightness and volume.</b><br>
+  For Linux, macOS and Windows.
+</p>
+
+<p align="center">
+  <a href="https://github.com/l41n-pr0t0/TouchpadFlow/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/l41n-pr0t0/TouchpadFlow?style=flat-square&color=0c0c0b&labelColor=4a4a48"></a>
+  <a href="https://github.com/l41n-pr0t0/TouchpadFlow/actions/workflows/ci.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/l41n-pr0t0/TouchpadFlow/ci.yml?branch=main&style=flat-square&color=0c0c0b&labelColor=4a4a48&label=build"></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-linux%20%C2%B7%20macos%20%C2%B7%20windows-0c0c0b?style=flat-square&labelColor=4a4a48">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-0c0c0b?style=flat-square&labelColor=4a4a48"></a>
+</p>
+
+---
 
 ## Install
 
-Every download lives on one page: **https://github.com/l41n-pr0t0/TouchpadFlow/releases/latest**
+**Linux** (any distro) **and macOS**: paste into a terminal:
 
-Or install in one command:
-
-**Linux (any distro) and macOS**, in a terminal:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.sh | bash
 ```
 
-**Windows 10/11**, in PowerShell (no admin needed):
+**Windows 10 / 11**: paste into PowerShell (no admin rights needed):
+
 ```powershell
 irm https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.ps1 | iex
 ```
 
-The installer picks the right build for your system (x86_64 or ARM), installs the engine and the **TouchpadFlow** settings app, adds it to your app launcher / Start menu, and starts the engine at login.
-On Linux it asks for `sudo` once, to install the udev rule that gives your login session access to the touchpad. On macOS, allow `touchpadflow-macos` under *Privacy & Security > Accessibility* so it can change brightness.
+That's it. The installer picks the right download for your computer, adds **TouchpadFlow** to your app menu, and starts it automatically every time you log in.
 
-| | Uninstall |
-| :--- | :--- |
-| Linux / macOS | `curl -fsSL https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.sh \| bash -s -- --uninstall` |
-| Windows | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.ps1))) -Uninstall` |
+> [!NOTE]
+> **Linux** asks for your password once, to let your account use the touchpad without root.
+> **macOS** needs one permission for brightness: *System Settings → Privacy & Security → Accessibility → allow `touchpadflow-macos`*.
 
-Build from source instead (needs Rust 1.95+): `git clone https://github.com/l41n-pr0t0/TouchpadFlow && cd TouchpadFlow && ./install.sh --from-source`.
-Linux builds target glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 and newer); older distros should use `--from-source`.
+Prefer to download it yourself? Every build is on the [**releases page**](https://github.com/l41n-pr0t0/TouchpadFlow/releases/latest).
 
-## Platforms
+---
 
-- **Linux (Rust Daemon):** High-performance Rust daemon for KDE Plasma 6, Hyprland, Sway, and GNOME utilizing `evdev`, `uinput`, `wpctl`, and `brightnessctl`. See instructions below.
-- **macOS (Rust Daemon):** Native Apple Silicon / Intel daemon in `macos/` written in pure Rust, interfacing with Apple's `MultitouchSupport` framework. See [macos/README.md](macos/README.md).
-- **Windows (PTP Tool):** Portable tray utility in `windows/` inspired by Wintego's SurfaceEdge architecture, using Windows Precision Touchpad HID Raw Input, Core Audio, WMI, and native Windows 11 OSD flyouts. See [windows/README.md](windows/README.md).
+## Use it
 
-## TouchpadFlow app (native settings window)
+Put **two fingers** on the left or right edge of the touchpad and slide **up** or **down**.
 
-`touchpadflow-app` is a native Rust desktop app (egui). It has no browser, no web server and no network access, and it runs on KDE, GNOME and other Linux desktops, plus Windows and macOS.
+| Where | Default | Slide up | Slide down |
+| :--- | :--- | :--- | :--- |
+| Left edge | Brightness | Brighter | Dimmer |
+| Right edge | Volume | Louder | Quieter |
+| Middle | Your normal touchpad | Scroll, click and move as usual | |
 
-```bash
-touchpadflow-app        # or open "TouchpadFlow" from your app launcher
-```
+Everything outside the edge zones behaves exactly like before.
+
+---
+
+## Settings
+
+Open **TouchpadFlow** from your app menu. Changes apply the moment you make them; there is no save button.
+
+<p align="center">
+  <img src="docs/images/zone-drag.gif" alt="Dragging the line on the touchpad map to make the left zone wider" width="660">
+</p>
 
 | Setting | What it does |
 | :--- | :--- |
-| **Gestures on/off** | Off hands the touchpad straight back to the system |
-| **Touchpad map** | Drag the zone lines to set how much of the pad each edge zone takes (5–45%) |
-| **Controls** | What each edge changes: Brightness, Volume, or Nothing. Defaults: left = brightness, right = volume |
-| **Sensitivity** | How much one full top-to-bottom slide changes the value (20–400%) |
-| **Advanced** | Dead zone before sliding starts, and how long an edge touch waits for a second finger |
+| **Gestures on / off** | Turns TouchpadFlow off and gives the touchpad straight back to your system. |
+| **Touchpad map** | Drag a line to make a zone wider or narrower (5–45% of the pad). |
+| **Controls** | Choose what each edge changes: *Brightness*, *Volume*, or *Nothing*. |
+| **Sensitivity** | How much one full top-to-bottom slide changes the value. |
+| **Advanced** | A small dead zone so resting fingers don't nudge values, and how long an edge touch waits for a second finger. |
 
-Changes save automatically to the shared settings file and apply immediately:
-Linux and macOS use `~/.config/touchpadflow.json`, Windows uses `%APPDATA%\TouchpadFlow\touchpadflow.json`.
-The app shows whether the Linux engine is running, paused or stopped, and reports save or config errors inline.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/app-custom.png" alt="Left edge set to volume with a wider zone, right edge turned off"></td>
+    <td width="50%"><img src="docs/images/app-off.png" alt="Gestures switched off, dark mode"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Left edge set to volume, right edge turned off</sub></td>
+    <td align="center"><sub>Gestures off, in dark mode</sub></td>
+  </tr>
+</table>
 
-## Gesture Layout
-
-```
-+-------------------+-----------------------------+-------------------+
-|     LEFT ZONE     |         CENTER ZONE         |    RIGHT ZONE     |
-|   (Brightness)    |      (Normal Scrolling)     |     (Volume)      |
-|                   |                             |                   |
-|  [F1] [F2]  ▲     |   Pass-through to KWin/     |     ▲  [F1] [F2]  |
-|             │     |   libinput pointer engine   |     │             |
-|             ▼     |                             |     ▼             |
-+-------------------+-----------------------------+-------------------+
-        22%                       56%                         22%
-```
-
-| Gesture | Action | Implementation |
-| :--- | :--- | :--- |
-| **Two fingers slide (Right Edge)** | Volume Up / Down | `wpctl` sink adjustment + KDE OSD notification |
-| **Two fingers slide (Left Edge)** | Brightness Up / Down | `brightnessctl` adjustment + KDE OSD notification |
-| **Two fingers slide (Center)** | Standard Scroll | Forwarded transparently to compositor |
-| **Three fingers swipe Up / Down** | Volume Up / Down | Continuous delta tracking |
-| **Three fingers swipe Left / Right** | Previous / Next Song | Simulated media scancodes (`KEY_PREVIOUSSONG`, `KEY_NEXTSONG`) |
-| **Three fingers tap** | Middle Click | Emits `BTN_MIDDLE` |
-| **Four fingers swipe Up / Down** | Overview / Show Desktop | KWin shortcut invocation |
-| **Four fingers swipe Left / Right** | Previous / Next Virtual Desktop | KWin shortcut invocation |
-
-## Architecture & Mechanics
-
-### 1. Zero-Allocation Event Loop
-The daemon opens the raw physical touchpad device with exclusive access (`EVIOCGRAB`). The native loop reads events via `evdev` into stack buffers without heap allocations in the hot path.
-
-### 2. Edge Zone Normalization
-Touchpad coordinate spaces differ between hardware vendors. TouchpadFlow reads the physical axis limits (`ABS_MT_POSITION_X` min/max) directly from the device capabilities and maps incoming coordinates to normalized values $x \in [0.0, 1.0]$.
-Touches whose initial contact falls within the outermost 22% of the pad lock the session into Edge Mode. Center touches pass to the virtual touchpad clone without latency.
-
-### 3. Settle Window
-Multi-finger contacts stagger physically over 10–30 ms scan intervals. TouchpadFlow buffers raw events during a 25 ms settling window. If a multi-finger gesture or edge gesture is identified, the buffer is dropped and virtual slots are cleanly cleared, preventing false single-finger clicks or cursor jumps.
-
-### 4. Asynchronous Controller Workers
-Subprocess calls to system utilities (`wpctl`, `brightnessctl`, `qdbus`) run on dedicated worker threads with condition variables. Changes are coalesced over 25 ms intervals so hardware event processing never blocks.
-
-## Security & Least-Privilege Architecture
-
-TouchpadFlow strictly adheres to the principle of least privilege across all supported platforms. The daemon **never runs as root or administrator**.
-
-### 1. Linux Permissions & Sandboxing
-- **Active Session Device Permissions (`uaccess`):** Instead of adding the user to the broad `input` group—which grants unconstrained read access to all system keyboards and creates a major security hazard—TouchpadFlow uses a dedicated udev rule (`udev/70-touchpadflow.rules`). This rule tags physical touchpads and `/dev/uinput` with `TAG+="uaccess"`, granting access dynamically only to the currently active graphical seat via `systemd-logind`.
-- **Systemd Sandboxing:** The provided systemd user unit enforces strict sandboxing:
-  - `NoNewPrivileges=yes`: Disallows privilege escalation.
-  - `IPAddressDeny=any`: Blocks all outbound and inbound network sockets.
-  - `DevicePolicy=closed` & `DeviceAllow`: Restricts hardware access exclusively to `/dev/uinput` and character input devices.
-  - `ProtectSystem=strict` & `ProtectHome=read-only`: Hardens the filesystem.
-- **Rootless Helper Fallback:** Non-systemd distributions (Alpine, Void, Gentoo) can run `touchpadflow --daemon` under the user session without root.
-
-### 2. Windows & macOS Least Privilege
-- **Windows:** Runs completely in user space without requiring administrator rights or third-party kernel drivers. Communicates with touchpads using standard Precision Touchpad (PTP) HID Raw Input.
-- **macOS:** Interacts cleanly through Apple's native `MultitouchSupport` API, operating under standard user permissions with explicit macOS Input Monitoring access.
+The app follows your system's light or dark theme.
 
 ---
 
-## Input Privacy
+## Extra gestures on Linux
 
-- **No Keyboard Capture:** TouchpadFlow binds exclusively to absolute multitouch coordinate axes (`ABS_MT_POSITION_X/Y`). It does not capture, read, or intercept keyboard strokes.
-- **Zero Movement Storage:** Touch coordinates are evaluated purely in ephemeral stack memory for edge detection and delta accumulation. No trace histories or raw events are saved to disk or persistent storage.
-- **Zero Network Transmission:** The core engine does not establish internet connections or upload telemetry. Complete network isolation is guaranteed at both application and systemd container levels.
-- **Ephemeral Processing:** Coordinates and contact states are discarded immediately upon finger release (`ABS_MT_TRACKING_ID == -1`).
-
----
-
-## Fault Tolerance & Crash Recovery
-
-Input daemon failures must never compromise the user's primary pointer device. TouchpadFlow provides comprehensive fault tolerance:
-
-1. **RAII Device Grab (`GrabGuard`):** Physical touchpad exclusivity is managed by an RAII guard. When the daemon terminates, drops out of scope, or encounters an interrupt (`SIGINT`, `SIGTERM`), the hardware grab is released immediately.
-2. **Panic Hook Restoration:** A global `std::panic::set_hook` intercepts unexpected panics, immediately ungrabbing the device and restoring native hardware control before unwinding.
-3. **Hot-Plug & Disconnect Tolerance:** Touchpad disconnections (`ENODEV`, device unplug) are caught gracefully. The engine flushes virtual slots, releases virtual state, and enters an automatic reconnect loop until the device returns.
-4. **Dropped-event recovery:** the kernel `SYN_DROPPED` resync (handled by `evdev`) restores slot state, so no timeout is needed. A timeout-based watchdog was removed because idle pads (e.g. on battery) stop reporting resting fingers and it lifted real touches.
-5. **Emergency Disable Mechanism:** Run `touchpadflow --toggle` or send `SIGUSR1` to immediately pause gesture processing and release the hardware grab, without killing the background service.
+| Gesture | Action |
+| :--- | :--- |
+| Three-finger tap | Middle click |
+| Three-finger swipe left / right | Previous / next track |
+| Four-finger swipe up / down | Overview / show desktop *(KDE Plasma)* |
+| Four-finger swipe left / right | Previous / next virtual desktop *(KDE Plasma)* |
 
 ---
 
-## Runtime requirements (Linux)
+## Works with
 
-- `uinput` kernel support (standard on every distro)
-- Audio: PipeWire (`wpctl`), PulseAudio (`pactl`), or ALSA (`amixer`)
-- Backlight: `brightnessctl`, `light`, or direct sysfs backlight access (granted by the udev rule)
+| | Linux | macOS | Windows |
+| :--- | :--- | :--- | :--- |
+| **Desktops** | KDE Plasma, GNOME, Hyprland, Sway, Xfce and others (Wayland and X11) | macOS on Apple Silicon and Intel | Windows 10 and 11 |
+| **Touchpads** | Any multitouch touchpad | Built-in trackpads | Precision Touchpads |
+| **Volume** | PipeWire, PulseAudio or ALSA | System volume | System volume |
+| **Brightness** | Built-in laptop screens | Built-in screens | Built-in screens |
 
-Live engine log: `journalctl --user -u touchpadflow -f`
+---
 
-## CLI Usage
+## Troubleshooting
 
-```text
-Usage: touchpadflow [OPTIONS]
+<details>
+<summary><b>My touchpad feels stuck or wrong. How do I turn TouchpadFlow off quickly?</b></summary>
 
-Options:
-  -d, --device <DEVICE>  Path to the touchpad evdev device (e.g. /dev/input/event9)
-  -c, --config <CONFIG>  Path to JSON configuration file
-      --grab             Exclusively grab the physical touchpad device [default: true]
-      --monitor          Monitor events without grabbing or filtering
-      --daemon           Run in background as a daemon (portable across non-systemd distros)
-      --toggle           Emergency toggle: pauses or resumes the running daemon
-  -h, --help             Print help
+Click **Gestures on** in the app to switch it off. On Linux you can also run:
+
+```bash
+touchpadflow --toggle
 ```
 
-## Configuration
+Your touchpad goes back to normal immediately. Run it again to turn TouchpadFlow back on.
+</details>
 
-The app writes `~/.config/touchpadflow.json` (or `$XDG_CONFIG_HOME/touchpadflow.json`); the daemon reads it on start and on `touchpadflow --reload`. You can also edit it by hand. Out-of-range values are clamped, and a broken file is rejected on reload so the running settings stay in place:
+<details>
+<summary><b>The app says “Engine not running” (Linux)</b></summary>
 
-```json
-{
-  "enabled": true,
-  "left_edge_ratio": 0.22,
-  "right_edge_ratio": 0.22,
-  "left_action": "brightness",
-  "right_action": "volume",
-  "left_sensitivity": 1.5,
-  "right_sensitivity": 1.5,
-  "edge_trigger_threshold": 35.0,
-  "settle_window_ms": 25,
-  "tap_threshold": 150.0,
-  "tap_duration_limit_s": 0.30,
-  "shortcuts": {
-    "three_finger_tap": "key:BTN_MIDDLE",
-    "swipe3_left": "key:KEY_PREVIOUSSONG",
-    "swipe3_right": "key:KEY_NEXTSONG",
-    "swipe4_up": "shortcut:Overview",
-    "swipe4_down": "shortcut:Show Desktop",
-    "swipe4_left": "shortcut:Switch to Previous Desktop",
-    "swipe4_right": "shortcut:Switch to Next Desktop"
-  }
-}
+```bash
+systemctl --user restart touchpadflow          # start it again
+journalctl --user -u touchpadflow -n 50        # see why it stopped
 ```
 
-## License
+If the log says the touchpad can't be opened, log out and back in once after installing, so the new permission applies.
+</details>
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+<details>
+<summary><b>Brightness doesn't change (Linux)</b></summary>
+
+Some laptops need the `brightnessctl` package. Install it from your distro (for example `sudo dnf install brightnessctl` or `sudo apt install brightnessctl`).
+</details>
+
+<details>
+<summary><b>The installer says the download doesn't run on my Linux</b></summary>
+
+Ready-made Linux builds need a distro from 2022 or newer (Ubuntu 22.04, Debian 12, Fedora 36 or later). On older systems, build it yourself; see [Build from source](#build-from-source).
+</details>
+
+<details>
+<summary><b>Windows SmartScreen warns about the app</b></summary>
+
+The app isn't code-signed yet. Choose *More info → Run anyway*. If something goes wrong, the log is at `%LOCALAPPDATA%\TouchpadFlow\TouchpadFlow.log`.
+</details>
+
+---
+
+## Privacy
+
+- **Nothing leaves your computer.** TouchpadFlow has no network code; on Linux the service is also blocked from the network by systemd.
+- **Touchpad only.** It never reads your keyboard and never records where you touch.
+- **No admin rights.** It runs as your user on every platform.
+
+Details are in [SECURITY.md](SECURITY.md).
+
+---
+
+## Uninstall
+
+**Linux and macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.sh | bash -s -- --uninstall
+```
+
+**Windows** (PowerShell)
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.ps1))) -Uninstall
+```
+
+Your settings are kept, in case you reinstall.
+
+---
+
+## Build from source
+
+Needs [Rust](https://rustup.rs) 1.95 or newer.
+
+```bash
+git clone https://github.com/l41n-pr0t0/TouchpadFlow
+cd TouchpadFlow
+./install.sh --from-source
+```
+
+On Windows, see [windows/README.md](windows/README.md). Contributions are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+<p align="center">
+  <sub>Apache-2.0 · Bundles <a href="assets/fonts">IBM Plex Mono and Space Mono</a> under the SIL Open Font License</sub>
+</p>

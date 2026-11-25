@@ -5,11 +5,12 @@ Thank you for your interest in contributing to TouchpadFlow! We welcome contribu
 ## Development Setup
 
 ### Linux
-Prerequisites: Rust 1.85+, `libudev-dev` / `systemd-devel`.
+Prerequisites: Rust 1.95+ (no system libraries needed to build).
 ```bash
 cargo check
 cargo test
 cargo clippy --all-targets
+cargo run --bin touchpadflow-app    # settings app
 ```
 
 ### Testing Without Touchpad Hardware

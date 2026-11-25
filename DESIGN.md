@@ -1,28 +1,33 @@
 # Design System: TouchpadFlow app
 
-## 0. Dials
-VARIANCE: 3 | MOTION: 2 | DENSITY: 5. It is a settings tool, so restraint is the point.
+Visual language shared with MNEMOS-ZERO: a monochrome ink-on-paper print. Dark mode is the same sheet printed in negative.
 
-## 1. Atmosphere
-A quiet utility window. Zinc neutrals, one accent, no ornament. Follows the system light/dark theme.
+## Dials
+VARIANCE 4 · MOTION 1 · DENSITY 5. It is a settings tool: restraint executed strictly.
 
-## 1b. Signature element
-**The touchpad map**: a to-scale drawing of the pad where the edge zones are shaded and you resize them by dragging the boundary lines. It is the product itself, not decoration. The same zone colour and labels appear in the column controls below it.
+## Signature element
+**The touchpad map**: a to-scale drawing of the pad. Edge zones are 45° halftone screentone, the boundaries are ink lines with a grip you drag to resize, the pointer area carries a drafting reticle, and the pad sits between corner crosshairs.
 
-## 2. Palette
-- **Zinc 900** (#18181B): dark panel background (never #000)
-- **Zinc 50** (#FAFAFA): light panel background
-- **Trackpad Teal** (#1F9E8A): the only accent. Active zones, sliders, "running" state
-- **Brick** (#C24A3F): errors and "engine not running"
-- **Ochre** (#B7862C): paused / gestures off
+## Palette (exactly four tones)
+| Token | Light | Dark | Role |
+| :--- | :--- | :--- | :--- |
+| ink | `#0c0c0b` | `#e6e6e2` | text, borders, active fills, offset shadows |
+| ink-soft | `#4a4a48` | `#9b9b98` | captions, screentone dots |
+| rule | `#9b9b98` | `#4a4a48` | hairlines, crosshairs, slider rails, hover |
+| paper | `#e6e6e2` | `#0c0c0b` | background |
 
-## 3. Typography
-egui's bundled UI font and monospace; numbers in zones use monospace. No web fonts are loaded.
+No hue anywhere. Emphasis comes from weight and inversion (paper on ink), never colour. Errors are shown as an inverted plate.
 
-## 4. States
-- Engine: checking / running / paused / gestures off / not running (Linux), "applies to platform engine" (macOS, Windows)
-- Errors (invalid config, save failure) are shown inline in the footer, never as pop-ups
-- A zone set to "Nothing" greys out and disables its sliders
+## Typography (bundled, OFL)
+- Display: Space Mono Bold (title plate)
+- Body and UI: IBM Plex Mono Regular; labels and buttons IBM Plex Mono SemiBold, uppercase
 
-## 7. Banned
-Emojis, neon/purple glows, pure black, browser or localhost UI.
+## Components
+- 0px corners everywhere.
+- Buttons: 2px ink border, 3px hard offset shadow; pressing sinks the button onto its shadow. "On" state is inverted.
+- Section headers: `NN / TITLE` followed by a hairline rule.
+- Status: solid square = running, hollow = paused/off, cross = not running.
+- Sliders: thin rule rail, ink trailing fill, rectangular handle.
+
+## Banned
+Colour accents, gradients, glows, rounded corners, emojis, spinners.

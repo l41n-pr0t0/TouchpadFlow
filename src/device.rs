@@ -76,6 +76,8 @@ impl TouchpadMetrics {
 pub struct VirtualOutput {
     pub touchpad: Option<VirtualDevice>,
     pub keyboard: Option<VirtualDevice>,
+    /// Reused per frame so forwarding never allocates in the event loop.
+    scratch: Vec<InputEvent>,
 }
 
 impl VirtualOutput {
@@ -91,6 +93,7 @@ impl VirtualOutput {
         Ok(Self {
             touchpad,
             keyboard: Some(keyboard),
+            scratch: Vec::with_capacity(256),
         })
     }
 
@@ -99,6 +102,7 @@ impl VirtualOutput {
         Self {
             touchpad: None,
             keyboard: None,
+            scratch: Vec::new(),
         }
     }
 
@@ -169,14 +173,14 @@ impl VirtualOutput {
         if let Some(ref mut tp) = self.touchpad
             && !events.is_empty()
         {
-            let mut evs = Vec::with_capacity(events.len() + 1);
-            evs.push(InputEvent::new(
+            self.scratch.clear();
+            self.scratch.push(InputEvent::new(
                 EventType::ABSOLUTE.0,
                 AbsoluteAxisCode::ABS_MT_SLOT.0,
                 start_slot as i32,
             ));
-            evs.extend_from_slice(events);
-            tp.emit(&evs).map_err(AppError::Io)?;
+            self.scratch.extend_from_slice(events);
+            tp.emit(&self.scratch).map_err(AppError::Io)?;
         }
         Ok(())
     }

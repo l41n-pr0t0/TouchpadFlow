@@ -18,6 +18,8 @@ All notable changes to this project will be documented in this file.
 - **macOS crate did not build** (missing `libc` dependency).
 
 ### Changed
+- Settings app restyled to the MNEMOS-ZERO monochrome print look: four-tone ink/paper palette, bundled IBM Plex Mono + Space Mono, square ink buttons with hard offset shadows, halftone touchpad map. Follows the system theme; `TOUCHPADFLOW_THEME=light|dark` pins one.
+- README rewritten for users, with screenshots in `docs/images/`.
 - One-command install for every OS: `install.sh` (Linux any distro + macOS, `--uninstall`, `--from-source`) and `install.ps1` (Windows). A tag-triggered release workflow publishes prebuilt Linux x86_64/aarch64, macOS universal and Windows x64/arm64 downloads.
 - Removed dead code and files: `uninstall.sh` (now `install.sh --uninstall`), `windows/build.ps1`, `config.example.json`, unused error variants, unused IPC `stop`, never-fired `pinch3_*` shortcuts, unused slot/engine fields, macOS `clap` dependency.
 - macOS engine checks every MultitouchSupport symbol before calling it instead of crashing.
