@@ -38,7 +38,6 @@ pub type MTContactCallback = extern "C" fn(
 
 pub struct MultitouchDevice {
     device: *mut c_void,
-    start_fn: unsafe extern "C" fn(*mut c_void, i32),
     stop_fn: unsafe extern "C" fn(*mut c_void, i32),
 }
 
@@ -46,7 +45,8 @@ impl MultitouchDevice {
     pub fn open_default(callback: MTContactCallback) -> Result<Self, String> {
         unsafe {
             let lib = libc::dlopen(
-                b"/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport\0".as_ptr() as *const _,
+                b"/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport\0"
+                    .as_ptr() as *const _,
                 libc::RTLD_NOW,
             );
 
@@ -54,17 +54,30 @@ impl MultitouchDevice {
                 return Err("Failed to load MultitouchSupport.framework".into());
             }
 
+            // A missing symbol would be a null fn pointer (UB to call): fail cleanly instead.
+            let sym = |name: &[u8]| {
+                let p = libc::dlsym(lib, name.as_ptr() as *const _);
+                if p.is_null() {
+                    Err(format!(
+                        "MultitouchSupport is missing {}",
+                        String::from_utf8_lossy(&name[..name.len() - 1])
+                    ))
+                } else {
+                    Ok(p)
+                }
+            };
+
             let create_default_fn: unsafe extern "C" fn() -> *mut c_void =
-                std::mem::transmute(libc::dlsym(lib, b"MTDeviceCreateDefault\0".as_ptr() as *const _));
+                std::mem::transmute(sym(b"MTDeviceCreateDefault\0")?);
 
             let register_cb_fn: unsafe extern "C" fn(*mut c_void, MTContactCallback) =
-                std::mem::transmute(libc::dlsym(lib, b"MTRegisterContactFrameCallback\0".as_ptr() as *const _));
+                std::mem::transmute(sym(b"MTRegisterContactFrameCallback\0")?);
 
             let start_fn: unsafe extern "C" fn(*mut c_void, i32) =
-                std::mem::transmute(libc::dlsym(lib, b"MTDeviceStart\0".as_ptr() as *const _));
+                std::mem::transmute(sym(b"MTDeviceStart\0")?);
 
             let stop_fn: unsafe extern "C" fn(*mut c_void, i32) =
-                std::mem::transmute(libc::dlsym(lib, b"MTDeviceStop\0".as_ptr() as *const _));
+                std::mem::transmute(sym(b"MTDeviceStop\0")?);
 
             let device = create_default_fn();
             if device.is_null() {
@@ -74,11 +87,7 @@ impl MultitouchDevice {
             register_cb_fn(device, callback);
             start_fn(device, 0);
 
-            Ok(Self {
-                device,
-                start_fn,
-                stop_fn,
-            })
+            Ok(Self { device, stop_fn })
         }
     }
 }

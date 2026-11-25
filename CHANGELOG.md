@@ -18,6 +18,9 @@ All notable changes to this project will be documented in this file.
 - **macOS crate did not build** (missing `libc` dependency).
 
 ### Changed
+- One-command install for every OS: `install.sh` (Linux any distro + macOS, `--uninstall`, `--from-source`) and `install.ps1` (Windows). A tag-triggered release workflow publishes prebuilt Linux x86_64/aarch64, macOS universal and Windows x64/arm64 downloads.
+- Removed dead code and files: `uninstall.sh` (now `install.sh --uninstall`), `windows/build.ps1`, `config.example.json`, unused error variants, unused IPC `stop`, never-fired `pinch3_*` shortcuts, unused slot/engine fields, macOS `clap` dependency.
+- macOS engine checks every MultitouchSupport symbol before calling it instead of crashing.
 - Replaced the localhost web Control Center (`--gui`, `--port`) with the native `touchpadflow-app`.
 - Edge zones are configurable per side: `left_action` / `right_action` (`brightness`, `volume`, `none`) and `left_sensitivity` / `right_sensitivity` (normalised to pad height). `volume_step` / `brightness_step` are gone.
 - New `enabled` switch, honoured by the Linux, macOS and Windows engines; macOS and Windows reload the shared settings file automatically.
@@ -30,7 +33,6 @@ All notable changes to this project will be documented in this file.
 - **GitHub Actions CI Workflow:** Added `.github/workflows/ci.yml` with automated testing, linting, formatting, and cross-platform compilation.
 - **Transactional Config & Live Reload:** Control Center now loads, validates, safely merges, and atomically writes configuration files, signaling the active daemon via IPC to hot-reload without restart.
 - **Control Center Security:** Added cryptographic session token authentication, strict `Host` and `Origin` header validation, and Content-Length parsing.
-- **Dedicated Uninstaller:** Added `uninstall.sh` to cleanly stop services, remove binaries, clean runtime sockets, and remove udev rules.
 
 ### Fixed
 - **Emergency Toggle Bug:** Replaced one-way boolean flag with atomic XOR toggle (`paused.fetch_xor(true)`) and dedicated IPC control, resolving permanent pause on toggle.

@@ -23,7 +23,8 @@
 - [ ] Unified platform adapter trait (`PlatformInput`, `PlatformOutput`, `PlatformBacklight`, `PlatformAudio`).
 
 ## Phase 4: Distribution & Packaging
-- [x] Dedicated uninstaller script (`uninstall.sh`).
+- [x] One-command installers (`install.sh` for Linux/macOS, `install.ps1` for Windows) with uninstall.
+- [x] Prebuilt release downloads for Linux x86_64/ARM64, macOS universal and Windows x64/ARM64.
 - [ ] Arch Linux AUR package (`PKGBUILD`).
 - [ ] NixOS Flake & Home Manager module.
 - [ ] Debian/Ubuntu (`.deb`) and Fedora/RHEL (`.rpm`) packaging.

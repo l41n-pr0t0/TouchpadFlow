@@ -19,23 +19,11 @@ pub enum SessionMode {
     Gesture4,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SlotData {
     pub active: bool,
-    pub tracking_id: i32,
     pub current_x: Option<f64>,
     pub current_y: Option<f64>,
-}
-
-impl Default for SlotData {
-    fn default() -> Self {
-        Self {
-            active: false,
-            tracking_id: -1,
-            current_x: None,
-            current_y: None,
-        }
-    }
 }
 
 pub struct GestureEngine {
@@ -54,7 +42,6 @@ pub struct GestureEngine {
 
     tap_eligible: bool,
     discrete_fired: bool,
-    last_avg_x: Option<f64>,
     last_avg_y: Option<f64>,
     start_avg_x: Option<f64>,
     start_avg_y: Option<f64>,
@@ -89,7 +76,6 @@ impl GestureEngine {
 
             tap_eligible: true,
             discrete_fired: false,
-            last_avg_x: None,
             last_avg_y: None,
             start_avg_x: None,
             start_avg_y: None,
@@ -135,7 +121,6 @@ impl GestureEngine {
         self.session_mode = SessionMode::Pointer;
         self.prev_finger_count = 0;
         self.settle_peak = 0;
-        self.last_avg_x = None;
         self.last_avg_y = None;
         self.start_avg_x = None;
         self.start_avg_y = None;
@@ -164,7 +149,6 @@ impl GestureEngine {
                     } else {
                         // Keep last position: the kernel omits X/Y that did not change.
                         slot.active = true;
-                        slot.tracking_id = val;
                     }
                 } else if code == AbsoluteAxisCode::ABS_MT_POSITION_X {
                     slot.current_x = Some(val as f64);
@@ -226,7 +210,6 @@ impl GestureEngine {
             self.settle_peak = count;
             self.tap_eligible = true;
             self.discrete_fired = false;
-            self.last_avg_x = None;
             self.last_avg_y = None;
             self.start_avg_x = None;
             self.start_avg_y = None;
@@ -405,7 +388,6 @@ impl GestureEngine {
             _ => {}
         }
 
-        self.last_avg_x = Some(avg_x);
         self.last_avg_y = Some(avg_y);
         Ok(())
     }
@@ -424,7 +406,6 @@ impl GestureEngine {
         self.buffer.clear();
         self.session_mode = SessionMode::Pointer;
         self.settle_peak = 0;
-        self.last_avg_x = None;
         self.last_avg_y = None;
         self.start_avg_x = None;
         self.start_avg_y = None;

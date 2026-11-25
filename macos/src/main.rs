@@ -3,10 +3,9 @@ mod controls;
 mod gesture;
 mod multitouch;
 
-use std::sync::Mutex;
-use clap::Parser;
 use gesture::MacGestureEngine;
 use multitouch::{MTContact, MultitouchDevice};
+use std::sync::Mutex;
 
 static GESTURE_ENGINE: Mutex<Option<MacGestureEngine>> = Mutex::new(None);
 
@@ -28,17 +27,7 @@ extern "C" fn contact_callback(
     0
 }
 
-#[derive(Parser, Debug)]
-#[command(name = "touchpadflow-macos")]
-#[command(
-    about = "Native macOS trackpad edge gesture daemon. Settings come from touchpadflow-app \
-             (~/.config/touchpadflow.json) and reload automatically."
-)]
-struct Cli {}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Cli::parse();
-
     let cfg = config::load();
     println!("=== TouchpadFlow for macOS ===");
     println!("Settings: {} ({cfg:?})", config::path().display());

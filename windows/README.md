@@ -16,28 +16,26 @@ Inspired by Wintego's SurfaceEdge architecture, TouchpadFlow for Windows brings 
 - **Coalesced Background Worker:** Audio and brightness I/O runs asynchronously off the input thread so touchpad tracking remains 100% fluid.
 - **System Tray Management:** Easy toggling for Start with Windows, pausing, and mode switching.
 
-## Building on Windows
+## Install
 
-Prerequisites: [.NET 8 SDK or newer](https://dotnet.microsoft.com/download).
-
-Run from PowerShell:
+In PowerShell (no admin rights needed):
 
 ```powershell
-.\build.ps1
+irm https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.ps1 | iex
 ```
 
-For ARM64 devices (such as Surface Pro / Surface Laptop Copilot+ PCs):
+This installs `TouchpadFlow.exe` (engine, tray icon) and `touchpadflow-app.exe` (settings) to `%LOCALAPPDATA%\Programs\TouchpadFlow`, adds Start menu entries, and starts the engine with Windows.
+Zone widths, actions, sensitivity and on/off come from `%APPDATA%\TouchpadFlow\touchpadflow.json` (written by the settings app) and reload within a second.
+
+## Building from source
+
+Prerequisites: [.NET 8 SDK](https://dotnet.microsoft.com/download) and Rust.
+
 ```powershell
-.\build.ps1 -Architecture win-arm64
+dotnet publish windows/TouchpadFlow.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true   # or win-arm64
+cargo build --release --bin touchpadflow-app
 ```
 
-This compiles a single-file, self-contained `TouchpadFlow.exe` that runs without requiring any installation or administrative privileges.
+## Tray menu
 
-## Running
-
-1. Double-click `TouchpadFlow.exe`.
-2. It minimizes to the Windows notification tray.
-3. Slide two fingers vertically along the:
-   - **Left edge (outer 18%):** Adjusts screen brightness.
-   - **Right edge (outer 18%):** Adjusts sound volume.
-4. Right-click the tray icon to switch between Two-Finger and One-Finger mode, enable Start with Windows, or exit.
+Right-click the tray icon to switch between Two-Finger and One-Finger mode, pause, toggle Start with Windows, or exit.

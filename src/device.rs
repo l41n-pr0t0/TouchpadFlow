@@ -269,19 +269,8 @@ impl GrabGuard {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn is_active(&self) -> bool {
-        self.active
-    }
-
     pub fn device_mut(&mut self) -> &mut Device {
         self.device.as_mut().expect("Device present in GrabGuard")
-    }
-
-    #[allow(dead_code)]
-    pub fn into_inner(mut self) -> Device {
-        self.ungrab();
-        self.device.take().expect("Device present in GrabGuard")
     }
 }
 

@@ -225,7 +225,7 @@ pub fn main() -> Result<()> {
     let (brightness, bright_worker) = BrightnessController::new();
 
     println!("========================================================");
-    println!(" TouchpadFlow v0.1.0 — Least Privilege & Fault Tolerant");
+    println!(" TouchpadFlow v{}", env!("CARGO_PKG_VERSION"));
     println!(
         " Audio: {:?} | Backlight: {}",
         volume.backend(),

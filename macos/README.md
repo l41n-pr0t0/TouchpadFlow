@@ -13,61 +13,18 @@ Native macOS trackpad edge gesture engine written in **100% Rust**, inspired by 
   - Compiled directly into a standalone release binary.
   - Zero third-party dependencies outside standard macOS system frameworks.
 
-## Building on macOS
-
-Prerequisites: Rust toolchain (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`).
+## Install
 
 ```bash
-cd macos
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.sh | bash
 ```
 
-The resulting binary will be at `macos/target/release/touchpadflow-macos`.
+This installs `touchpadflow-macos` to `~/.local/bin`, `TouchpadFlow.app` (settings) to `~/Applications`, and a LaunchAgent (`com.touchpadflow.engine`) that starts the engine at login.
+Settings are read from `~/.config/touchpadflow.json` and reloaded within a second whenever the app saves them.
 
-## Running
+## Building from source
 
 ```bash
-./macos/target/release/touchpadflow-macos
+cargo build --release --manifest-path macos/Cargo.toml   # engine
+cargo build --release --bin touchpadflow-app             # settings app
 ```
-
-Options:
-```text
-Options:
-      --left-edge <LEFT_EDGE>    Left edge strip width ratio (0.0 to 0.4) [default: 0.20]
-      --right-edge <RIGHT_EDGE>  Right edge strip width ratio (0.0 to 0.4) [default: 0.20]
-  -h, --help                     Print help
-```
-
-## Running as a macOS LaunchAgent (Background Daemon)
-
-To start automatically when you log into macOS:
-
-1. Copy the binary to `/usr/local/bin`:
-   ```bash
-   sudo cp target/release/touchpadflow-macos /usr/local/bin/
-   ```
-
-2. Create `~/Library/LaunchAgents/com.touchpadflow.daemon.plist`:
-   ```xml
-   <?xml version="1.0" encoding="UTF-8"?>
-   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-   <plist version="1.0">
-   <dict>
-       <key>Label</key>
-       <string>com.touchpadflow.daemon</string>
-       <key>ProgramArguments</key>
-       <array>
-           <string>/usr/local/bin/touchpadflow-macos</string>
-       </array>
-       <key>RunAtLoad</key>
-       <true/>
-       <key>KeepAlive</key>
-       <true/>
-   </dict>
-   </plist>
-   ```
-
-3. Load the service:
-   ```bash
-   launchctl load ~/Library/LaunchAgents/com.touchpadflow.daemon.plist
-   ```

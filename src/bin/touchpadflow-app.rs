@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")] // no console window behind the app
+
 //! TouchpadFlow settings app: native window (egui), no browser, no network.
 //! Edits the shared config file; every engine (Linux daemon, macOS, Windows) reads it.
 

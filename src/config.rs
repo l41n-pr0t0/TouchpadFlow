@@ -100,8 +100,6 @@ fn default_shortcuts() -> HashMap<String, String> {
         ("three_finger_tap", "key:BTN_MIDDLE"),
         ("swipe3_left", "key:KEY_PREVIOUSSONG"),
         ("swipe3_right", "key:KEY_NEXTSONG"),
-        ("pinch3_in", "key:KEY_PLAYPAUSE"),
-        ("pinch3_out", "key:KEY_PLAYPAUSE"),
         ("swipe4_up", "shortcut:Overview"),
         ("swipe4_down", "shortcut:Show Desktop"),
         ("swipe4_left", "shortcut:Switch to Previous Desktop"),

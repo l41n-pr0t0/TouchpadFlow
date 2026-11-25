@@ -2,6 +2,33 @@
 
 TouchpadFlow is a low-latency touchpad gesture daemon written in Rust for Linux and KDE Plasma 6 (Wayland). It intercepts physical multitouch events directly from `/dev/input/event*`, routes edge slide gestures to hardware volume and display brightness controls, passes normal pointer and scrolling motions through a virtual UInput device, and executes 3- and 4-finger window/media gestures.
 
+## Install
+
+Every download lives on one page: **https://github.com/l41n-pr0t0/TouchpadFlow/releases/latest**
+
+Or install in one command:
+
+**Linux (any distro) and macOS**, in a terminal:
+```bash
+curl -fsSL https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.sh | bash
+```
+
+**Windows 10/11**, in PowerShell (no admin needed):
+```powershell
+irm https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.ps1 | iex
+```
+
+The installer picks the right build for your system (x86_64 or ARM), installs the engine and the **TouchpadFlow** settings app, adds it to your app launcher / Start menu, and starts the engine at login.
+On Linux it asks for `sudo` once, to install the udev rule that gives your login session access to the touchpad. On macOS, allow `touchpadflow-macos` under *Privacy & Security > Accessibility* so it can change brightness.
+
+| | Uninstall |
+| :--- | :--- |
+| Linux / macOS | `curl -fsSL https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.sh \| bash -s -- --uninstall` |
+| Windows | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.ps1))) -Uninstall` |
+
+Build from source instead (needs Rust 1.95+): `git clone https://github.com/l41n-pr0t0/TouchpadFlow && cd TouchpadFlow && ./install.sh --from-source`.
+Linux builds target glibc 2.35+ (Ubuntu 22.04, Debian 12, Fedora 36 and newer); older distros should use `--from-source`.
+
 ## Platforms
 
 - **Linux (Rust Daemon):** High-performance Rust daemon for KDE Plasma 6, Hyprland, Sway, and GNOME utilizing `evdev`, `uinput`, `wpctl`, and `brightnessctl`. See instructions below.
@@ -103,41 +130,18 @@ Input daemon failures must never compromise the user's primary pointer device. T
 1. **RAII Device Grab (`GrabGuard`):** Physical touchpad exclusivity is managed by an RAII guard. When the daemon terminates, drops out of scope, or encounters an interrupt (`SIGINT`, `SIGTERM`), the hardware grab is released immediately.
 2. **Panic Hook Restoration:** A global `std::panic::set_hook` intercepts unexpected panics, immediately ungrabbing the device and restoring native hardware control before unwinding.
 3. **Hot-Plug & Disconnect Tolerance:** Touchpad disconnections (`ENODEV`, device unplug) are caught gracefully. The engine flushes virtual slots, releases virtual state, and enters an automatic reconnect loop until the device returns.
-4. **Stuck Contact Watchdog:** A 400ms idle watchdog timer audits multi-finger slots. If an incomplete release sequence occurs at the hardware level, the watchdog cancels orphaned contact states.
+4. **Dropped-event recovery:** the kernel `SYN_DROPPED` resync (handled by `evdev`) restores slot state, so no timeout is needed. A timeout-based watchdog was removed because idle pads (e.g. on battery) stop reporting resting fingers and it lifted real touches.
 5. **Emergency Disable Mechanism:** Run `touchpadflow --toggle` or send `SIGUSR1` to immediately pause gesture processing and release the hardware grab, without killing the background service.
 
 ---
 
-## Prerequisites
+## Runtime requirements (Linux)
 
-- Rust toolchain (1.85+)
-- Linux with `uinput` kernel support
+- `uinput` kernel support (standard on every distro)
 - Audio: PipeWire (`wpctl`), PulseAudio (`pactl`), or ALSA (`amixer`)
-- Backlight: `brightnessctl`, `light`, or direct sysfs backlight permissions
-- Graphical desktop: KDE Plasma 6, Hyprland, Sway, GNOME, or any Wayland/X11 environment
+- Backlight: `brightnessctl`, `light`, or direct sysfs backlight access (granted by the udev rule)
 
-## Installation
-
-```bash
-git clone git@github.com:l41n-pr0t0/TouchpadFlow.git
-cd TouchpadFlow
-./install.sh
-```
-
-The installer compiles the release binary and installs the session-based uaccess udev rules and systemd service:
-
-```bash
-# Enable and start the sandboxed user service:
-systemctl --user enable --now touchpadflow.service
-
-# Or run in background on non-systemd distros:
-touchpadflow --daemon
-```
-
-Inspect live status:
-```bash
-journalctl --user -u touchpadflow.service -f
-```
+Live engine log: `journalctl --user -u touchpadflow -f`
 
 ## CLI Usage
 

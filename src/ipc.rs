@@ -95,10 +95,6 @@ impl IpcServer {
                                         reload_flag.store(true, Ordering::SeqCst);
                                         "{\"status\":\"reloaded\"}\n".to_string()
                                     }
-                                    "stop" => {
-                                        r_clone.store(false, Ordering::SeqCst);
-                                        "{\"status\":\"stopping\"}\n".to_string()
-                                    }
                                     _ => "{\"error\":\"unknown command\"}\n".to_string(),
                                 };
                                 let _ = stream.write_all(resp.as_bytes());

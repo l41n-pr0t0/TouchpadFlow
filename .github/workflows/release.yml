@@ -1,0 +1,108 @@
+name: Release
+
+# Push a tag like v0.2.0 to build every platform and publish the downloads
+# that install.sh / install.ps1 fetch from releases/latest.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          # 22.04 = glibc 2.35, so the binaries also run on older distros.
+          - { runner: ubuntu-22.04, arch: x86_64 }
+          - { runner: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --bins
+      - name: Package
+        run: |
+          mkdir -p dist/touchpadflow
+          cp target/release/touchpadflow target/release/touchpadflow-app \
+             udev/70-touchpadflow.rules systemd/touchpadflow.service \
+             linux/touchpadflow.desktop dist/touchpadflow/
+          tar -C dist -czf touchpadflow-linux-${{ matrix.arch }}.tar.gz touchpadflow
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: touchpadflow-linux-${{ matrix.arch }}.tar.gz
+
+  macos:
+    name: macOS universal
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build both architectures
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --bin touchpadflow-app --target $t
+            cargo build --release --manifest-path macos/Cargo.toml --target $t
+          done
+      - name: Package universal binaries
+        run: |
+          mkdir -p dist/touchpadflow
+          lipo -create -output dist/touchpadflow/touchpadflow-app \
+            target/{aarch64,x86_64}-apple-darwin/release/touchpadflow-app
+          lipo -create -output dist/touchpadflow/touchpadflow-macos \
+            macos/target/{aarch64,x86_64}-apple-darwin/release/touchpadflow-macos
+          codesign --force -s - dist/touchpadflow/*
+          tar -C dist -czf touchpadflow-macos-universal.tar.gz touchpadflow
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: touchpadflow-macos-universal.tar.gz
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    strategy:
+      matrix:
+        include:
+          - { runner: windows-latest, arch: x64 }
+          - { runner: windows-11-arm, arch: arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build engine and app
+        run: |
+          dotnet publish windows/TouchpadFlow.csproj -c Release -r win-${{ matrix.arch }} --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o out
+          cargo build --release --bin touchpadflow-app
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item dist -ItemType Directory | Out-Null
+          Copy-Item out/TouchpadFlow.exe, target/release/touchpadflow-app.exe dist/
+          Compress-Archive dist/* touchpadflow-windows-${{ matrix.arch }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: touchpadflow-windows-${{ matrix.arch }}.zip
+
+  publish:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            touchpadflow-linux-*.tar.gz
+            touchpadflow-macos-universal.tar.gz
+            touchpadflow-windows-*.zip

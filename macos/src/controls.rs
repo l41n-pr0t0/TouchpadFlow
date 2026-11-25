@@ -20,9 +20,7 @@ impl MacAudio {
     pub fn set_volume(scalar: f32) {
         let pct = (scalar.clamp(0.0, 1.0) * 100.0).round() as i32;
         let script = format!("set volume output volume {}", pct);
-        let _ = Command::new("osascript")
-            .args(["-e", &script])
-            .status();
+        let _ = Command::new("osascript").args(["-e", &script]).status();
     }
 }
 
@@ -37,8 +35,6 @@ impl MacBrightness {
             r#"tell application "System Events" to key code 145"# // Brightness Down
         };
 
-        let _ = Command::new("osascript")
-            .args(["-e", script])
-            .status();
+        let _ = Command::new("osascript").args(["-e", script]).status();
     }
 }
