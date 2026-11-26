@@ -7,26 +7,32 @@ pub struct MTPoint {
     pub y: f32,
 }
 
+/// Mirrors Apple's private `MTTouch` (96 bytes). A wrong size or field order corrupts every
+/// finger after the first, because the callback hands us a packed array of these.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct MTContact {
     pub frame: i32,
     pub timestamp: f64,
     pub identifier: i32,
+    /// 0 untracked, 1 start, 2 hover, 3 make-touch, 4 touching, 5 break, 6 linger, 7 out of range.
     pub state: i32,
     pub finger_id: i32,
     pub hand_id: i32,
     pub normalized_position: MTPoint,
+    pub normalized_velocity: MTPoint,
     pub size: f32,
     pub zero1: i32,
     pub angle: f32,
     pub major_axis: f32,
     pub minor_axis: f32,
     pub absolute_position: MTPoint,
+    pub absolute_velocity: MTPoint,
     pub zero2: [i32; 2],
-    pub velocity: MTPoint,
-    pub zero3: [i32; 2],
+    pub density: f32,
 }
+
+const _: () = assert!(std::mem::size_of::<MTContact>() == 96);
 
 pub type MTContactCallback = extern "C" fn(
     device: *mut c_void,

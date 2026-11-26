@@ -24,12 +24,30 @@ const BORDER: f32 = 2.0;
 const OFFSET: f32 = 3.0; // hard "press" shadow under buttons
 
 fn main() -> eframe::Result {
+    // wgpu (default) can fail on VMs, RDP and old GPU drivers; the Windows build has no
+    // console, so that used to look like the app "never launching". Fall back to OpenGL.
+    let first = run(eframe::Renderer::Wgpu);
+    let Err(wgpu_err) = first else { return first };
+    eprintln!("wgpu renderer failed ({wgpu_err}); retrying with OpenGL");
+    let second = run(eframe::Renderer::Glow);
+    if let Err(e) = &second {
+        let msg = format!("wgpu: {wgpu_err}\nglow: {e}\n");
+        if let Some(dir) = config_path().parent() {
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(dir.join("touchpadflow-app.log"), msg);
+        }
+    }
+    second
+}
+
+fn run(renderer: eframe::Renderer) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TouchpadFlow")
             .with_app_id("touchpadflow")
             .with_inner_size([660.0, 900.0])
             .with_min_inner_size([480.0, 600.0]),
+        renderer,
         ..Default::default()
     };
     eframe::run_native(
@@ -324,6 +342,59 @@ fn notify_engine() -> Result<(), String> {
     Err("The Windows engine reloads it within a second.".into())
 }
 
+const INSTALL_SH: &str =
+    "curl -fsSL https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.sh | bash";
+const INSTALL_PS1: &str =
+    "irm https://raw.githubusercontent.com/l41n-pr0t0/TouchpadFlow/main/install.ps1 | iex";
+
+/// Runs the same one-liner as a fresh install, in a visible terminal so the user sees
+/// progress and can type a sudo password. Returns once the terminal has been opened.
+fn launch_updater() -> Result<(), String> {
+    use std::process::Command;
+    let spawned = if cfg!(windows) {
+        // `start` gives the installer its own console window.
+        Command::new("cmd")
+            .args([
+                "/C",
+                "start",
+                "TouchpadFlow update",
+                "powershell",
+                "-NoProfile",
+            ])
+            .args(["-ExecutionPolicy", "Bypass", "-Command", INSTALL_PS1])
+            .spawn()
+            .map(drop)
+    } else if cfg!(target_os = "macos") {
+        let script = format!("tell application \"Terminal\" to do script \"{INSTALL_SH}\"");
+        Command::new("osascript")
+            .args(["-e", &script])
+            .spawn()
+            .map(drop)
+    } else {
+        let cmd = format!("{INSTALL_SH}; echo; read -rp 'Done. Press Enter to close.' _");
+        let terminals: [(&str, &[&str]); 5] = [
+            ("x-terminal-emulator", &["-e"]),
+            ("konsole", &["-e"]),
+            ("gnome-terminal", &["--"]),
+            ("kitty", &[]),
+            ("xterm", &["-e"]),
+        ];
+        let mut last = Err(std::io::Error::other("no terminal emulator found"));
+        for (bin, args) in terminals {
+            last = Command::new(bin)
+                .args(args)
+                .args(["bash", "-c", &cmd])
+                .spawn()
+                .map(drop);
+            if last.is_ok() {
+                break;
+            }
+        }
+        last
+    };
+    spawned.map_err(|e| e.to_string())
+}
+
 fn spawn_status_poller(ctx: egui::Context, slot: Arc<Mutex<Engine>>) {
     std::thread::spawn(move || {
         loop {
@@ -354,6 +425,110 @@ fn probe_engine() -> Engine {
     Engine::NotRunning
 }
 
+// ---------------------------------------------------------------- background
+
+/// Deterministic pseudo-random value in -1..1, so hand-inked wobble is stable between frames.
+fn noise(seed: u32) -> f32 {
+    let mut h = seed.wrapping_mul(0x9E37_79B1) ^ 0x85EB_CA6B;
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2C1B_3C6D);
+    h ^= h >> 12;
+    (h & 0xFFFF) as f32 / 32767.5 - 1.0
+}
+
+/// Irregular filled blot with a few droplets: spilled ink.
+fn ink_blot(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
+    let pts: Vec<Pos2> = (0..14)
+        .map(|i| {
+            let a = i as f32 / 14.0 * std::f32::consts::TAU;
+            c + Vec2::angled(a) * r * (0.7 + 0.45 * noise(seed + i).abs())
+        })
+        .collect();
+    p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
+    for i in 0..4 {
+        let a = noise(seed + 50 + i) * std::f32::consts::PI;
+        p.circle_filled(
+            c + Vec2::angled(a) * r * 1.5,
+            r * 0.12 * (1.0 + noise(seed + i)),
+            col,
+        );
+    }
+}
+
+/// Ink on paper, tiled faintly behind the content: splatters, brush strokes and drips.
+fn background_icons(p: &Painter, rect: Rect, t: Tones) {
+    const CELL: f32 = 170.0;
+    let col = |a: u8| Color32::from_rgba_unmultiplied(t.ink.r(), t.ink.g(), t.ink.b(), a);
+    let cols = (rect.width() / CELL).ceil() as i32 + 1;
+    let rows = (rect.height() / CELL).ceil() as i32 + 1;
+    for row in 0..rows {
+        for col_i in 0..cols {
+            let seed = (col_i * 31 + row * 57) as u32 * 101;
+            let c = Pos2::new(
+                rect.left() + (col_i as f32 + 0.5 * (row % 2) as f32) * CELL + noise(seed) * 22.0,
+                rect.top() + (row as f32 + 0.5) * CELL + noise(seed + 1) * 22.0,
+            );
+            match (col_i + row * 2).rem_euclid(3) {
+                0 => doodle_splatter(p, c, 22.0, seed, col(36)),
+                1 => doodle_brush(p, c, 46.0, seed, col(40)),
+                _ => doodle_drip(p, c, 22.0, seed, col(34)),
+            }
+        }
+    }
+}
+
+/// Central blot flung out into droplets.
+fn doodle_splatter(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
+    ink_blot(p, c, r, seed, col);
+    for i in 0..9 {
+        let a = noise(seed + 100 + i) * std::f32::consts::PI;
+        let d = r * (1.6 + 1.6 * noise(seed + 120 + i).abs());
+        p.circle_filled(
+            c + Vec2::angled(a) * d,
+            1.5 + 3.0 * noise(seed + 140 + i).abs(),
+            col,
+        );
+    }
+}
+
+/// One tapered brush stroke: fat in the middle, pointed at both ends.
+fn doodle_brush(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
+    let dir = Vec2::angled(-0.5 + noise(seed) * 0.4);
+    let normal = Vec2::new(-dir.y, dir.x);
+    let w = 7.0 + 3.0 * noise(seed + 1).abs();
+    let pts = vec![
+        c - dir * r,
+        c - dir * r * 0.4 + normal * w,
+        c + dir * r * 0.5 + normal * w * 0.6,
+        c + dir * r,
+        c + dir * r * 0.5 - normal * w * 0.5,
+        c - dir * r * 0.4 - normal * w,
+    ];
+    p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
+    // Dry-brush bristle streaks trailing off the end.
+    for i in 0..3 {
+        let o = normal * (i as f32 - 1.0) * 4.0;
+        p.line_segment(
+            [c + dir * r + o, c + dir * r * 1.5 + o],
+            Stroke::new(1.0, col),
+        );
+    }
+}
+
+fn doodle_drip(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
+    ink_blot(p, c - Vec2::new(0.0, r * 0.4), r, seed, col);
+    for i in 0..3 {
+        let x = c.x + (i as f32 - 1.0) * r * 0.5;
+        let len = r * (0.8 + (noise(seed + i) + 1.0));
+        p.rect_filled(
+            Rect::from_min_max(Pos2::new(x - 1.5, c.y), Pos2::new(x + 1.5, c.y + len)),
+            1.5,
+            col,
+        );
+        p.circle_filled(Pos2::new(x, c.y + len), 3.0, col);
+    }
+}
+
 // ---------------------------------------------------------------- ui
 
 impl eframe::App for SettingsApp {
@@ -371,6 +546,7 @@ impl eframe::App for SettingsApp {
             .show(ui, |ui| self.footer(ui));
 
         egui::CentralPanel::default().frame(margin).show(ui, |ui| {
+            background_icons(ui.painter(), ui.max_rect(), Tones::ui(ui));
             egui::ScrollArea::vertical().show(ui, |ui| {
                 self.header(ui);
                 ui.add_space(18.0);
@@ -674,6 +850,17 @@ impl SettingsApp {
         let t = Tones::ui(ui);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ink_button(ui, "UPDATE", false)
+                    .on_hover_text("Download and install the latest release in a terminal window")
+                    .clicked()
+                {
+                    self.notice = Some(match launch_updater() {
+                        Ok(()) => Notice::Info(
+                            "Updater opened. Reopen TouchpadFlow when it finishes.".into(),
+                        ),
+                        Err(e) => Notice::Error(format!("Could not start the updater: {e}")),
+                    });
+                }
                 if ink_button(ui, "RESET DEFAULTS", false)
                     .on_hover_text("Left = brightness, right = volume, 22% zones")
                     .clicked()
@@ -876,13 +1063,6 @@ fn screentone(p: &Painter, rect: Rect, pitch: f32, radius: f32, color: Color32) 
     }
 }
 
-/// Drafting crosshair: a short "+" just outside a corner.
-fn crosshair(p: &Painter, at: Pos2, color: Color32) {
-    let s = Stroke::new(1.0, color);
-    p.hline((at.x - 7.0)..=(at.x + 7.0), at.y, s);
-    p.vline(at.x, (at.y - 7.0)..=(at.y + 7.0), s);
-}
-
 /// Signature element: a to-scale touchpad you resize by dragging the zone edges.
 fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
     let t = Tones::ui(ui);
@@ -901,7 +1081,7 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
             if c.x < pad.center().x { -6.0 } else { 6.0 },
             if c.y < pad.center().y { -6.0 } else { 6.0 },
         );
-        crosshair(&painter, c + out, t.rule);
+        ink_blot(&painter, c + out, 5.0, (c.x * 7.0 + c.y) as u32, t.ink);
     }
     painter.rect_filled(pad, 0, t.paper);
 
@@ -999,7 +1179,7 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
         painter.vline(
             edge_x,
             pad.y_range(),
-            Stroke::new(if hot { 4.0 } else { BORDER }, t.ink),
+            Stroke::new(if hot { 4.5 } else { 3.0 }, t.ink),
         );
         // Grip: a small ink block on the line.
         let grip = Rect::from_center_size(Pos2::new(edge_x, pad.center().y), Vec2::new(10.0, 28.0));
@@ -1023,10 +1203,7 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
             + (pad.width() * (1.0 - cfg.left_edge_ratio - cfg.right_edge_ratio)) / 2.0,
         pad.center().y,
     );
-    let s = Stroke::new(1.0, t.rule);
-    painter.circle_stroke(mid, 16.0, s);
-    painter.hline((mid.x - 26.0)..=(mid.x + 26.0), mid.y, s);
-    painter.vline(mid.x, (mid.y - 26.0)..=(mid.y + 26.0), s);
+    doodle_splatter(&painter, mid, 14.0, 5, t.ink_soft);
     painter.text(
         mid + Vec2::new(0.0, 40.0),
         Align2::CENTER_CENTER,
@@ -1034,7 +1211,7 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
         FontId::new(11.0, strong()),
         t.ink_soft,
     );
-    painter.rect_stroke(pad, 0, Stroke::new(BORDER, t.ink), StrokeKind::Inside);
+    painter.rect_stroke(pad, 0, Stroke::new(4.0, t.ink), StrokeKind::Inside);
 
     ui.label(
         egui::RichText::new(

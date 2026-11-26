@@ -2,12 +2,15 @@ use crate::config::{EdgeAction, SharedConfig};
 use crate::controls::{MacAudio, MacBrightness};
 use crate::multitouch::MTContact;
 
+const STEP: f32 = 1.0 / 16.0;
+
 pub struct MacGestureEngine {
     pub config: SharedConfig,
     active_side: i32, // -1: left zone, 1: right zone, 0: none
     start_y: f32,
     previous_y: f32,
     current_volume: f32,
+    brightness_acc: f32,
 }
 
 impl MacGestureEngine {
@@ -18,20 +21,22 @@ impl MacGestureEngine {
             start_y: 0.0,
             previous_y: 0.0,
             current_volume: MacAudio::get_volume(),
+            brightness_acc: 0.0,
         }
     }
 
     pub fn handle_contacts(&mut self, contacts: &[MTContact]) {
-        // Look for touching or moving fingers (state 2 or 3)
+        // Fingers on the surface: make-touch (3) or touching (4). State 2 is hovering.
         let active: Vec<&MTContact> = contacts
             .iter()
-            .filter(|c| c.state == 2 || c.state == 3)
+            .filter(|c| c.state == 3 || c.state == 4)
             .collect();
 
         // Two-finger mode default
         if !self.config.enabled || active.len() != 2 {
-            if self.active_side != 0 && active.is_empty() {
+            if active.len() < 2 {
                 self.active_side = 0;
+                self.brightness_acc = 0.0;
             }
             return;
         }
@@ -51,6 +56,7 @@ impl MacGestureEngine {
             self.start_y = avg_y;
             self.previous_y = avg_y;
             self.current_volume = MacAudio::get_volume();
+            self.brightness_acc = 0.0;
             return;
         }
 
@@ -69,7 +75,14 @@ impl MacGestureEngine {
                 self.current_volume = (self.current_volume + dy * sensitivity).clamp(0.0, 1.0);
                 MacAudio::set_volume(self.current_volume);
             }
-            EdgeAction::Brightness => MacBrightness::set_brightness(dy),
+            EdgeAction::Brightness => {
+                // One key press = one of macOS's 16 brightness steps; never spawn per frame.
+                self.brightness_acc += dy * sensitivity;
+                while self.brightness_acc.abs() >= STEP {
+                    MacBrightness::step(self.brightness_acc > 0.0);
+                    self.brightness_acc -= STEP.copysign(self.brightness_acc);
+                }
+            }
             EdgeAction::None => {}
         }
 
