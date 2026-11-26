@@ -58,10 +58,36 @@ jobs:
             macos/target/{aarch64,x86_64}-apple-darwin/release/touchpadflow-macos
           codesign --force -s - dist/touchpadflow/*
           tar -C dist -czf touchpadflow-macos-universal.tar.gz touchpadflow
+      - name: Build TouchpadFlow.dmg
+        run: |
+          # Drag-to-Applications bundle: settings app + engine; the app registers the engine at login.
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP=dmg/TouchpadFlow.app
+          mkdir -p "$APP/Contents/MacOS"
+          cp dist/touchpadflow/touchpadflow-app dist/touchpadflow/touchpadflow-macos "$APP/Contents/MacOS/"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>TouchpadFlow</string>
+            <key>CFBundleIdentifier</key><string>com.touchpadflow.app</string>
+            <key>CFBundleExecutable</key><string>touchpadflow-app</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+          codesign --force --deep -s - "$APP"
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname TouchpadFlow -srcfolder dmg -ov -format UDZO TouchpadFlow-macos-universal.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: touchpadflow-macos-universal.tar.gz
+          path: |
+            touchpadflow-macos-universal.tar.gz
+            TouchpadFlow-macos-universal.dmg
 
   windows:
     name: Windows ${{ matrix.arch }}
@@ -92,8 +118,35 @@ jobs:
           name: windows-${{ matrix.arch }}
           path: touchpadflow-windows-${{ matrix.arch }}.zip
 
+  windows-installer:
+    name: Windows setup .exe
+    needs: windows
+    # Inno Setup only packages files, so one x64 runner builds both architectures.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-*
+          merge-multiple: true
+      - name: Build installers
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          foreach ($arch in 'x64', 'arm64') {
+            Expand-Archive "touchpadflow-windows-$arch.zip" -DestinationPath "src-$arch"
+            & $iscc "/DArch=$arch" "/DAppVersion=$version" "/DSrcDir=$PWD\src-$arch" "/O$PWD" windows\installer.iss
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: TouchpadFlow-Setup-*.exe
+
   publish:
-    needs: [linux, macos, windows]
+    needs: [linux, macos, windows, windows-installer]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -105,4 +158,6 @@ jobs:
           files: |
             touchpadflow-linux-*.tar.gz
             touchpadflow-macos-universal.tar.gz
+            TouchpadFlow-macos-universal.dmg
             touchpadflow-windows-*.zip
+            TouchpadFlow-Setup-*.exe

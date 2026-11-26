@@ -24,6 +24,8 @@ const BORDER: f32 = 2.0;
 const OFFSET: f32 = 3.0; // hard "press" shadow under buttons
 
 fn main() -> eframe::Result {
+    #[cfg(target_os = "macos")]
+    ensure_mac_engine();
     // wgpu (default) can fail on VMs, RDP and old GPU drivers; the Windows build has no
     // console, so that used to look like the app "never launching". Fall back to OpenGL.
     let first = run(eframe::Renderer::Wgpu);
@@ -38,6 +40,71 @@ fn main() -> eframe::Result {
         }
     }
     second
+}
+
+#[cfg(any(target_os = "macos", test))]
+const MAC_AGENT: &str = "com.touchpadflow.engine";
+
+/// LaunchAgent plist that starts `engine` at login and keeps it running.
+#[cfg(any(target_os = "macos", test))]
+fn mac_agent_plist(engine: &std::path::Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>{MAC_AGENT}</string>
+  <key>ProgramArguments</key><array><string>{}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+"#,
+        engine.display()
+    )
+}
+
+/// Engine path from a plist written by `mac_agent_plist` or install.sh (same layout).
+#[cfg(any(target_os = "macos", test))]
+fn mac_agent_program(plist: &str) -> Option<&str> {
+    let start = plist.find("<array><string>")? + "<array><string>".len();
+    let len = plist[start..].find("</string>")?;
+    Some(&plist[start..start + len])
+}
+
+/// The .dmg ships the engine inside TouchpadFlow.app. Register it as a login agent unless
+/// a working one already exists (for example from install.sh), so drag-to-Applications works.
+#[cfg(target_os = "macos")]
+fn ensure_mac_engine() {
+    use std::process::Command;
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let plist = PathBuf::from(home).join(format!("Library/LaunchAgents/{MAC_AGENT}.plist"));
+    let existing = std::fs::read_to_string(&plist).unwrap_or_default();
+    if mac_agent_program(&existing).is_some_and(|p| std::path::Path::new(p).exists()) {
+        return;
+    }
+    let Some(engine) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("touchpadflow-macos")))
+        .filter(|e| e.exists())
+    else {
+        return;
+    };
+    if let Some(dir) = plist.parent()
+        && std::fs::create_dir_all(dir).is_ok()
+        && std::fs::write(&plist, mac_agent_plist(&engine)).is_ok()
+        && let Ok(uid) = Command::new("id").arg("-u").output()
+    {
+        let target = format!("gui/{}", String::from_utf8_lossy(&uid.stdout).trim());
+        let _ = Command::new("launchctl")
+            .args(["bootout", &target])
+            .arg(&plist)
+            .status();
+        let _ = Command::new("launchctl")
+            .args(["bootstrap", &target])
+            .arg(&plist)
+            .status();
+    }
 }
 
 fn run(renderer: eframe::Renderer) -> eframe::Result {
@@ -1507,6 +1574,22 @@ fn egui_key_name(key: egui::Key) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mac_agent_plist_round_trips_the_engine_path() {
+        let engine = std::path::Path::new(
+            "/Applications/TouchpadFlow.app/Contents/MacOS/touchpadflow-macos",
+        );
+        let plist = mac_agent_plist(engine);
+        assert_eq!(mac_agent_program(&plist), engine.to_str());
+        // install.sh writes the same layout.
+        let sh = "<array><string>/Users/a/.local/bin/touchpadflow-macos</string></array>";
+        assert_eq!(
+            mac_agent_program(sh),
+            Some("/Users/a/.local/bin/touchpadflow-macos")
+        );
+        assert_eq!(mac_agent_program(""), None);
+    }
 
     #[test]
     fn ink_page_is_dark_at_the_frame_and_light_in_the_middle() {

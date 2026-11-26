@@ -2,9 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - 2026-11-25
+## [0.4.0] - 2026-11-26
 
 ### Added
+- **Installable apps:** `TouchpadFlow-Setup-x64.exe` / `-arm64.exe` for Windows and `TouchpadFlow-macos-universal.dmg` for macOS (the app registers its bundled engine at login).
 - **Look settings:** System, Light, Dark and the new **Sumi** theme (washi paper, sumi ink, vermilion seal accent), plus an "Ink page" on/off toggle (`ink_page` in the config).
 - **Ink page:** a procedurally rendered ink background (drips, halftone, hatching) fixed behind the settings window.
 - **Update button** in the settings app, and a coloured, animated Windows installer.

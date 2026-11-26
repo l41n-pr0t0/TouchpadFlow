@@ -38,7 +38,13 @@ That's it. The installer picks the right download for your computer, adds **Touc
 > **Linux** asks for your password once, to let your account use the touchpad without root.
 > **macOS** needs one permission for brightness: *System Settings → Privacy & Security → Accessibility → allow `touchpadflow-macos`*.
 
-Prefer to download it yourself? Every build is on the [**releases page**](https://github.com/l41n-pr0t0/TouchpadFlow/releases/latest).
+Prefer a normal installer? Grab it from the [**releases page**](https://github.com/l41n-pr0t0/TouchpadFlow/releases/latest):
+
+- **Windows:** `TouchpadFlow-Setup-x64.exe` (or `-arm64.exe`). No admin rights needed.
+- **macOS:** `TouchpadFlow-macos-universal.dmg`. Drag **TouchpadFlow** to Applications and open it once; it starts the engine at every login from then on.
+  The build is not notarized, so the first time right-click the app → **Open** (or run `xattr -dr com.apple.quarantine /Applications/TouchpadFlow.app`).
+
+Already installed? The **UPDATE** button in the app installs the latest release for you.
 
 ---
 
