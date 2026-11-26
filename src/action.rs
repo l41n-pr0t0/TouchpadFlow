@@ -599,8 +599,11 @@ fn show_osd_brightness(pct: i32) {
 }
 
 pub fn execute_action(action: &str) {
-    if let Some(cmd) = action.strip_prefix("command:") {
-        let _ = Command::new("sh").args(["-c", cmd]).spawn();
+    if let Some(cmd) = action
+        .strip_prefix("command:")
+        .or_else(|| action.strip_prefix("cmd:"))
+    {
+        let _ = Command::new("sh").args(["-c", cmd.trim()]).spawn();
     } else if let Some(shortcut) = action.strip_prefix("shortcut:") {
         let de = env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()

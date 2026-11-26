@@ -108,17 +108,9 @@ impl VirtualOutput {
 
     fn create_virtual_keyboard() -> Result<VirtualDevice> {
         let mut keys: AttributeSet<KeyCode> = AttributeSet::new();
-        keys.insert(KeyCode::BTN_LEFT);
-        keys.insert(KeyCode::BTN_RIGHT);
-        keys.insert(KeyCode::BTN_MIDDLE);
-        keys.insert(KeyCode::KEY_PLAYPAUSE);
-        keys.insert(KeyCode::KEY_NEXTSONG);
-        keys.insert(KeyCode::KEY_PREVIOUSSONG);
-        keys.insert(KeyCode::KEY_VOLUMEUP);
-        keys.insert(KeyCode::KEY_VOLUMEDOWN);
-        keys.insert(KeyCode::KEY_MUTE);
-        keys.insert(KeyCode::KEY_BRIGHTNESSUP);
-        keys.insert(KeyCode::KEY_BRIGHTNESSDOWN);
+        for &k in crate::macros::MacroKey::ALL {
+            keys.insert(KeyCode::from(k));
+        }
 
         let dev = VirtualDevice::builder()
             .map_err(|e| AppError::Uinput(format!("failed opening uinput: {e}")))?
@@ -223,15 +215,40 @@ impl VirtualOutput {
     }
 
     pub fn tap_key(&mut self, key: KeyCode) -> Result<()> {
+        self.tap_combo(&[], key)
+    }
+
+    pub fn tap_combo(&mut self, modifiers: &[KeyCode], key: KeyCode) -> Result<()> {
         if let Some(ref mut kb) = self.keyboard {
-            let press = InputEvent::new(EventType::KEY.0, key.0, 1);
-            let release = InputEvent::new(EventType::KEY.0, key.0, 0);
             let syn = InputEvent::new(
                 EventType::SYNCHRONIZATION.0,
                 SynchronizationCode::SYN_REPORT.0,
                 0,
             );
-            kb.emit(&[press, syn, release, syn]).map_err(AppError::Io)?;
+            let mut evs = Vec::with_capacity((modifiers.len() * 2 + 2) * 2);
+            for &m in modifiers {
+                evs.push(InputEvent::new(EventType::KEY.0, m.0, 1));
+                evs.push(syn);
+            }
+            evs.push(InputEvent::new(EventType::KEY.0, key.0, 1));
+            evs.push(syn);
+            evs.push(InputEvent::new(EventType::KEY.0, key.0, 0));
+            evs.push(syn);
+            for &m in modifiers.iter().rev() {
+                evs.push(InputEvent::new(EventType::KEY.0, m.0, 0));
+                evs.push(syn);
+            }
+            kb.emit(&evs).map_err(AppError::Io)?;
+        }
+        Ok(())
+    }
+
+    pub fn tap_sequence(&mut self, steps: &[(Vec<KeyCode>, KeyCode)]) -> Result<()> {
+        for (idx, (mods, key)) in steps.iter().enumerate() {
+            if idx > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(12));
+            }
+            self.tap_combo(mods, *key)?;
         }
         Ok(())
     }

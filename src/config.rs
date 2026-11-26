@@ -22,6 +22,35 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// A custom gesture-to-action macro rule, optionally scoped to specific apps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacroRule {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub name: String,
+    /// Case-insensitive substrings matched against the active window (empty = all apps).
+    #[serde(default)]
+    pub apps: Vec<String>,
+    /// Gesture name, e.g. "swipe3_right", "three_finger_tap", "swipe4_up".
+    pub gesture: String,
+    /// Action: key combo/sequence ("ctrl+tab", "ctrl+l, enter"), "command:...", "key:...", or "shortcut:...".
+    pub action: String,
+}
+
+pub const GESTURE_NAMES: &[(&str, &str)] = &[
+    ("three_finger_tap", "Three-finger tap"),
+    ("four_finger_tap", "Four-finger tap"),
+    ("swipe3_left", "Three-finger swipe left"),
+    ("swipe3_right", "Three-finger swipe right"),
+    ("swipe3_up", "Three-finger swipe up"),
+    ("swipe3_down", "Three-finger swipe down"),
+    ("swipe4_left", "Four-finger swipe left"),
+    ("swipe4_right", "Four-finger swipe right"),
+    ("swipe4_up", "Four-finger swipe up"),
+    ("swipe4_down", "Four-finger swipe down"),
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Master switch. false = the engine passes the touchpad through untouched.
@@ -70,6 +99,10 @@ pub struct AppConfig {
     /// UI theme preference for the settings app.
     #[serde(default)]
     pub theme: ThemeMode,
+
+    /// Custom gesture macros (optionally scoped to specific apps).
+    #[serde(default)]
+    pub macros: Vec<MacroRule>,
 }
 
 pub const EDGE_RATIO_RANGE: (f32, f32) = (0.05, 0.45);
@@ -146,6 +179,17 @@ impl AppConfig {
         self.edge_trigger_threshold =
             finite_or(self.edge_trigger_threshold, default_edge_threshold()).clamp(0.0, 500.0);
         self.settle_window_ms = self.settle_window_ms.clamp(0, 200);
+        for m in &mut self.macros {
+            m.apps = m
+                .apps
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            m.gesture = m.gesture.trim().to_string();
+            m.action = m.action.trim().to_string();
+            m.name = m.name.trim().to_string();
+        }
         self
     }
 

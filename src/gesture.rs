@@ -363,8 +363,17 @@ impl GestureEngine {
                             self.fire_action("swipe3_left")?;
                         }
                     } else if total_dy.abs() > total_dx.abs() {
-                        let step = -dy / self.metrics.height() * self.config.right_sensitivity;
-                        self.volume.adjust(step);
+                        let vertical_gesture = if total_dy < 0.0 {
+                            "swipe3_up"
+                        } else {
+                            "swipe3_down"
+                        };
+                        if let Some(act) = self.resolve_gesture_action(vertical_gesture) {
+                            self.run_action_string(&act)?;
+                        } else {
+                            let step = -dy / self.metrics.height() * self.config.right_sensitivity;
+                            self.volume.adjust(step);
+                        }
                     }
                     self.discrete_fired = true;
                 }
@@ -413,19 +422,76 @@ impl GestureEngine {
         Ok(())
     }
 
+    fn resolve_gesture_action(&self, action_name: &str) -> Option<String> {
+        self.resolve_macro_action(action_name)
+            .or_else(|| self.config.shortcuts.get(action_name).cloned())
+    }
+
+    fn resolve_macro_action(&self, action_name: &str) -> Option<String> {
+        let candidates: Vec<&crate::config::MacroRule> = self
+            .config
+            .macros
+            .iter()
+            .filter(|m| m.enabled && m.gesture == action_name && !m.action.trim().is_empty())
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let needs_window = candidates.iter().any(|m| !m.apps.is_empty());
+        let active = if needs_window {
+            crate::macros::active_window_info()
+        } else {
+            None
+        };
+        // Prefer app-specific rules over global rules.
+        if let Some(m) = candidates
+            .iter()
+            .find(|m| !m.apps.is_empty() && crate::macros::app_matches(&m.apps, active.as_deref()))
+        {
+            return Some(m.action.clone());
+        }
+        candidates
+            .iter()
+            .find(|m| m.apps.is_empty())
+            .map(|m| m.action.clone())
+    }
+
     fn fire_action(&mut self, action_name: &str) -> Result<()> {
-        if let Some(act) = self.config.shortcuts.get(action_name) {
-            if let Some(key_name) = act.strip_prefix("key:") {
-                let code = match key_name {
-                    "BTN_MIDDLE" => KeyCode::BTN_MIDDLE,
-                    "KEY_PLAYPAUSE" => KeyCode::KEY_PLAYPAUSE,
-                    "KEY_NEXTSONG" => KeyCode::KEY_NEXTSONG,
-                    "KEY_PREVIOUSSONG" => KeyCode::KEY_PREVIOUSSONG,
-                    _ => KeyCode::BTN_MIDDLE,
-                };
-                self.output.tap_key(code)?;
-            } else {
-                execute_action(act);
+        let act = self
+            .resolve_macro_action(action_name)
+            .or_else(|| self.config.shortcuts.get(action_name).cloned());
+        if let Some(act) = act {
+            self.run_action_string(&act)?;
+        }
+        Ok(())
+    }
+
+    fn run_action_string(&mut self, act: &str) -> Result<()> {
+        let trimmed = act.trim();
+        if trimmed.starts_with("command:")
+            || trimmed.starts_with("cmd:")
+            || trimmed.starts_with("shortcut:")
+            || trimmed.starts_with("dbus:")
+        {
+            execute_action(trimmed);
+            return Ok(());
+        }
+        let key_expr = trimmed.strip_prefix("key:").unwrap_or(trimmed);
+        match crate::macros::parse_sequence(key_expr) {
+            Ok(steps) => {
+                let converted: Vec<(Vec<KeyCode>, KeyCode)> = steps
+                    .into_iter()
+                    .map(|c| {
+                        (
+                            c.modifiers.into_iter().map(KeyCode::from).collect(),
+                            KeyCode::from(c.key),
+                        )
+                    })
+                    .collect();
+                self.output.tap_sequence(&converted)?;
+            }
+            Err(err) => {
+                eprintln!("warning: invalid macro/shortcut '{act}': {err}");
             }
         }
         Ok(())

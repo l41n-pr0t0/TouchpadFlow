@@ -14,8 +14,10 @@ use eframe::egui::{
     WidgetInfo, style::HandleShape,
 };
 use touchpadflow::config::{
-    AppConfig, EDGE_RATIO_RANGE, EdgeAction, SENSITIVITY_RANGE, ThemeMode, config_path,
+    AppConfig, EDGE_RATIO_RANGE, EdgeAction, GESTURE_NAMES, MacroRule, SENSITIVITY_RANGE,
+    ThemeMode, config_path,
 };
+use touchpadflow::macros::parse_sequence;
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(350);
 const BORDER: f32 = 2.0;
@@ -249,6 +251,7 @@ struct SettingsApp {
     dirty_since: Option<Instant>,
     notice: Option<Notice>,
     engine: Arc<Mutex<Engine>>,
+    recording_macro: Option<usize>,
 }
 
 impl SettingsApp {
@@ -273,6 +276,7 @@ impl SettingsApp {
             dirty_since: None,
             notice,
             engine,
+            recording_macro: None,
         }
     }
 
@@ -393,6 +397,8 @@ impl eframe::App for SettingsApp {
                         );
                     });
                     ui.add_space(14.0);
+                    self.macros_section(ui);
+                    ui.add_space(14.0);
                     self.advanced(ui);
                 });
             });
@@ -495,9 +501,148 @@ impl SettingsApp {
         });
     }
 
+    fn macros_section(&mut self, ui: &mut Ui) {
+        let t = Tones::ui(ui);
+        section(ui, "04", "Macros");
+        ui.label(
+            egui::RichText::new(
+                "Bind gestures to key combos (ctrl+tab, ctrl+l, enter) or commands (command:...), scoped to specific apps or global.",
+            )
+            .size(11.5)
+            .color(t.ink_soft),
+        );
+        ui.add_space(6.0);
+
+        if let Some(rec_idx) = self.recording_macro {
+            if rec_idx >= self.cfg.macros.len() {
+                self.recording_macro = None;
+            } else if let Some(captured) = capture_key_combo(ui) {
+                if captured == "esc" {
+                    self.recording_macro = None;
+                } else {
+                    self.cfg.macros[rec_idx].action = captured;
+                    self.recording_macro = None;
+                }
+            }
+        }
+
+        let mut remove_idx: Option<usize> = None;
+        for (idx, rule) in self.cfg.macros.iter_mut().enumerate() {
+            egui::Frame::new()
+                .stroke(Stroke::new(1.0, t.rule))
+                .fill(t.paper)
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let state_label = if rule.enabled { "ON" } else { "OFF" };
+                        if ink_button(ui, state_label, rule.enabled).clicked() {
+                            rule.enabled = !rule.enabled;
+                        }
+                        let current_label = GESTURE_NAMES
+                            .iter()
+                            .find(|(id, _)| *id == rule.gesture)
+                            .map(|(_, label)| *label)
+                            .unwrap_or(rule.gesture.as_str());
+                        egui::ComboBox::from_id_salt(("macro-gesture", idx))
+                            .width(210.0)
+                            .selected_text(current_label)
+                            .show_ui(ui, |ui| {
+                                for &(id, label) in GESTURE_NAMES {
+                                    if ui.selectable_label(rule.gesture == id, label).clicked() {
+                                        rule.gesture = id.to_string();
+                                    }
+                                }
+                            });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ink_button(ui, "REMOVE", false).clicked() {
+                                remove_idx = Some(idx);
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    egui::Grid::new(("macro-grid", idx))
+                        .num_columns(2)
+                        .spacing([10.0, 6.0])
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("APPS").size(11.0).color(t.ink_soft));
+                            let mut apps_text = rule.apps.join(", ");
+                            let edit = egui::TextEdit::singleline(&mut apps_text)
+                                .desired_width(ui.available_width() - 10.0)
+                                .hint_text("all apps, or e.g. firefox, code");
+                            if ui.add(edit).changed() {
+                                rule.apps = apps_text
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                            }
+                            ui.end_row();
+
+                            ui.label(egui::RichText::new("ACTION").size(11.0).color(t.ink_soft));
+                            ui.horizontal(|ui| {
+                                let recording = self.recording_macro == Some(idx);
+                                let rec_label = if recording { "PRESS KEYS..." } else { "REC" };
+                                let w = (ui.available_width() - 110.0).max(140.0);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut rule.action)
+                                        .desired_width(w)
+                                        .hint_text("e.g. ctrl+tab or command:..."),
+                                );
+                                if ink_button(ui, rec_label, recording)
+                                    .on_hover_text("Click and press a key combo (Esc cancels)")
+                                    .clicked()
+                                {
+                                    self.recording_macro = if recording { None } else { Some(idx) };
+                                }
+                            });
+                            ui.end_row();
+                        });
+
+                    let act = rule.action.trim();
+                    if !act.is_empty()
+                        && !act.starts_with("command:")
+                        && !act.starts_with("cmd:")
+                        && !act.starts_with("shortcut:")
+                        && !act.starts_with("dbus:")
+                        && let Err(err) = parse_sequence(act.strip_prefix("key:").unwrap_or(act))
+                    {
+                        ui.add_space(4.0);
+                        egui::Frame::new()
+                            .fill(t.ink)
+                            .inner_margin(egui::Margin::symmetric(6, 2))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("Invalid macro: {err}"))
+                                        .size(11.0)
+                                        .color(t.paper),
+                                );
+                            });
+                    }
+                });
+            ui.add_space(6.0);
+        }
+
+        if let Some(idx) = remove_idx {
+            self.cfg.macros.remove(idx);
+            if self.recording_macro == Some(idx) {
+                self.recording_macro = None;
+            }
+        }
+
+        if ink_button(ui, "+ ADD MACRO", false).clicked() {
+            self.cfg.macros.push(MacroRule {
+                enabled: true,
+                name: String::new(),
+                apps: Vec::new(),
+                gesture: "swipe3_right".into(),
+                action: String::new(),
+            });
+        }
+    }
+
     fn advanced(&mut self, ui: &mut Ui) {
         egui::CollapsingHeader::new(
-            egui::RichText::new("04 / ADVANCED").font(FontId::new(12.0, strong())),
+            egui::RichText::new("05 / ADVANCED").font(FontId::new(12.0, strong())),
         )
         .show(ui, |ui| {
             egui::Grid::new("adv")
@@ -898,6 +1043,121 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
         .size(11.5)
         .color(t.ink_soft),
     );
+}
+
+fn capture_key_combo(ui: &Ui) -> Option<String> {
+    let mut captured = None;
+    ui.input(|i| {
+        for ev in &i.events {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = ev
+                && let Some(key_name) = egui_key_name(*key)
+            {
+                let mut parts = Vec::new();
+                if modifiers.ctrl {
+                    parts.push("ctrl");
+                }
+                if modifiers.shift {
+                    parts.push("shift");
+                }
+                if modifiers.alt {
+                    parts.push("alt");
+                }
+                if modifiers.mac_cmd || modifiers.command && !modifiers.ctrl {
+                    parts.push("super");
+                }
+                parts.push(key_name);
+                captured = Some(parts.join("+"));
+                break;
+            }
+        }
+    });
+    captured
+}
+
+fn egui_key_name(key: egui::Key) -> Option<&'static str> {
+    use egui::Key;
+    Some(match key {
+        Key::A => "a",
+        Key::B => "b",
+        Key::C => "c",
+        Key::D => "d",
+        Key::E => "e",
+        Key::F => "f",
+        Key::G => "g",
+        Key::H => "h",
+        Key::I => "i",
+        Key::J => "j",
+        Key::K => "k",
+        Key::L => "l",
+        Key::M => "m",
+        Key::N => "n",
+        Key::O => "o",
+        Key::P => "p",
+        Key::Q => "q",
+        Key::R => "r",
+        Key::S => "s",
+        Key::T => "t",
+        Key::U => "u",
+        Key::V => "v",
+        Key::W => "w",
+        Key::X => "x",
+        Key::Y => "y",
+        Key::Z => "z",
+        Key::Num0 => "0",
+        Key::Num1 => "1",
+        Key::Num2 => "2",
+        Key::Num3 => "3",
+        Key::Num4 => "4",
+        Key::Num5 => "5",
+        Key::Num6 => "6",
+        Key::Num7 => "7",
+        Key::Num8 => "8",
+        Key::Num9 => "9",
+        Key::F1 => "f1",
+        Key::F2 => "f2",
+        Key::F3 => "f3",
+        Key::F4 => "f4",
+        Key::F5 => "f5",
+        Key::F6 => "f6",
+        Key::F7 => "f7",
+        Key::F8 => "f8",
+        Key::F9 => "f9",
+        Key::F10 => "f10",
+        Key::F11 => "f11",
+        Key::F12 => "f12",
+        Key::Tab => "tab",
+        Key::Enter => "enter",
+        Key::Escape => "esc",
+        Key::Space => "space",
+        Key::Backspace => "backspace",
+        Key::Delete => "delete",
+        Key::Insert => "insert",
+        Key::ArrowUp => "up",
+        Key::ArrowDown => "down",
+        Key::ArrowLeft => "left",
+        Key::ArrowRight => "right",
+        Key::Home => "home",
+        Key::End => "end",
+        Key::PageUp => "pageup",
+        Key::PageDown => "pagedown",
+        Key::Minus => "minus",
+        Key::Equals => "equal",
+        Key::OpenBracket => "leftbrace",
+        Key::CloseBracket => "rightbrace",
+        Key::Semicolon => "semicolon",
+        Key::Quote => "apostrophe",
+        Key::Backtick => "grave",
+        Key::Backslash => "backslash",
+        Key::Comma => "comma",
+        Key::Period => "dot",
+        Key::Slash => "slash",
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
