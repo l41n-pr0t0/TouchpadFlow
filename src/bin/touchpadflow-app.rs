@@ -14,7 +14,7 @@ use eframe::egui::{
     WidgetInfo, style::HandleShape,
 };
 use touchpadflow::config::{
-    AppConfig, EDGE_RATIO_RANGE, EdgeAction, SENSITIVITY_RANGE, config_path,
+    AppConfig, EDGE_RATIO_RANGE, EdgeAction, SENSITIVITY_RANGE, ThemeMode, config_path,
 };
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(350);
@@ -183,14 +183,23 @@ fn visuals(dark: bool) -> Visuals {
     v
 }
 
-fn apply_theme(ctx: &egui::Context) {
-    install_fonts(ctx);
-    // Follows the system theme; TOUCHPADFLOW_THEME=light|dark pins one.
-    match std::env::var("TOUCHPADFLOW_THEME").as_deref() {
-        Ok("light") => ctx.set_theme(egui::ThemePreference::Light),
-        Ok("dark") => ctx.set_theme(egui::ThemePreference::Dark),
-        _ => {}
+fn to_egui_theme(mode: ThemeMode) -> egui::ThemePreference {
+    match mode {
+        ThemeMode::System => egui::ThemePreference::System,
+        ThemeMode::Light => egui::ThemePreference::Light,
+        ThemeMode::Dark => egui::ThemePreference::Dark,
     }
+}
+
+fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
+    install_fonts(ctx);
+    // Follows the configured/system theme; TOUCHPADFLOW_THEME=light|dark pins one.
+    let pref = match std::env::var("TOUCHPADFLOW_THEME").as_deref() {
+        Ok("light") => egui::ThemePreference::Light,
+        Ok("dark") => egui::ThemePreference::Dark,
+        _ => to_egui_theme(mode),
+    };
+    ctx.set_theme(pref);
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         ctx.set_visuals_of(theme, visuals(theme == egui::Theme::Dark));
         ctx.style_mut_of(theme, |style| {
@@ -244,7 +253,6 @@ struct SettingsApp {
 
 impl SettingsApp {
     fn new(ctx: &egui::Context) -> Self {
-        apply_theme(ctx);
         let path = config_path();
         let (cfg, notice) = match AppConfig::load(&path) {
             Ok(c) => (c, None),
@@ -255,6 +263,7 @@ impl SettingsApp {
                 ))),
             ),
         };
+        apply_theme(ctx, cfg.theme);
         let engine = Arc::new(Mutex::new(Engine::Checking));
         spawn_status_poller(ctx.clone(), Arc::clone(&engine));
         Self {
@@ -437,6 +446,25 @@ impl SettingsApp {
                 if resp.clicked() {
                     self.cfg.enabled = !self.cfg.enabled;
                 }
+
+                let dark = ui.visuals().dark_mode;
+                let (theme_label, theme_hint) = if dark {
+                    ("DARK", "Switch to light theme")
+                } else {
+                    ("LIGHT", "Switch to dark theme")
+                };
+                let theme_resp = ink_button(ui, theme_label, dark).on_hover_text(theme_hint);
+                theme_resp
+                    .widget_info(|| WidgetInfo::selected(Role::CheckBox, true, dark, "Dark theme"));
+                if theme_resp.clicked() {
+                    let next = if dark {
+                        ThemeMode::Light
+                    } else {
+                        ThemeMode::Dark
+                    };
+                    self.cfg.theme = next;
+                    ui.ctx().set_theme(to_egui_theme(next));
+                }
             });
         });
         ui.add_space(8.0);
@@ -506,6 +534,7 @@ impl SettingsApp {
                     .clicked()
                 {
                     self.cfg = AppConfig::default();
+                    ui.ctx().set_theme(to_egui_theme(self.cfg.theme));
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     match &self.notice {
@@ -873,11 +902,26 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn percent_parser_accepts_typed_values() {
-        assert_eq!(super::parse_percent("30%"), Some(0.3));
-        assert_eq!(super::parse_percent(" 150% / slide"), Some(1.5));
-        assert_eq!(super::parse_percent("150"), Some(1.5));
-        assert_eq!(super::parse_percent("abc"), None);
+        assert_eq!(parse_percent("30%"), Some(0.3));
+        assert_eq!(parse_percent(" 150% / slide"), Some(1.5));
+        assert_eq!(parse_percent("150"), Some(1.5));
+        assert_eq!(parse_percent("abc"), None);
+    }
+
+    #[test]
+    fn theme_mode_maps_to_egui_preference() {
+        assert_eq!(
+            to_egui_theme(ThemeMode::System),
+            egui::ThemePreference::System
+        );
+        assert_eq!(
+            to_egui_theme(ThemeMode::Light),
+            egui::ThemePreference::Light
+        );
+        assert_eq!(to_egui_theme(ThemeMode::Dark), egui::ThemePreference::Dark);
     }
 }

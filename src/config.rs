@@ -12,6 +12,16 @@ pub enum EdgeAction {
     None,
 }
 
+/// UI theme preference for the settings app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
     /// Master switch. false = the engine passes the touchpad through untouched.
@@ -56,6 +66,10 @@ pub struct AppConfig {
 
     #[serde(default = "default_shortcuts")]
     pub shortcuts: HashMap<String, String>,
+
+    /// UI theme preference for the settings app.
+    #[serde(default)]
+    pub theme: ThemeMode,
 }
 
 pub const EDGE_RATIO_RANGE: (f32, f32) = (0.05, 0.45);
@@ -196,6 +210,7 @@ mod tests {
         assert!(c.enabled);
         assert_eq!(c.left_action, EdgeAction::Brightness);
         assert_eq!(c.right_action, EdgeAction::Volume);
+        assert_eq!(c.theme, ThemeMode::System);
     }
 
     #[test]
