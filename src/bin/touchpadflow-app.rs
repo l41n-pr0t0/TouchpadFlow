@@ -270,6 +270,7 @@ struct SettingsApp {
     notice: Option<Notice>,
     engine: Arc<Mutex<Engine>>,
     recording_macro: Option<usize>,
+    backdrop: Backdrop,
 }
 
 impl SettingsApp {
@@ -295,6 +296,7 @@ impl SettingsApp {
             notice,
             engine,
             recording_macro: None,
+            backdrop: Backdrop::default(),
         }
     }
 
@@ -427,106 +429,220 @@ fn probe_engine() -> Engine {
 
 // ---------------------------------------------------------------- background
 
-/// Deterministic pseudo-random value in -1..1, so hand-inked wobble is stable between frames.
-fn noise(seed: u32) -> f32 {
-    let mut h = seed.wrapping_mul(0x9E37_79B1) ^ 0x85EB_CA6B;
+// Procedural ink page. Rendered once into a texture (not per frame, not vector shapes) so it
+// gets what real ink has: feathered edges, halftone, grain and grey wash.
+
+fn hash2(x: i32, y: i32, seed: u32) -> f32 {
+    let mut h = (x as u32).wrapping_mul(0x8DA6_B343)
+        ^ (y as u32).wrapping_mul(0xD816_3841)
+        ^ seed.wrapping_mul(0xCB1A_B31F);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0x5BD1_E995);
     h ^= h >> 15;
-    h = h.wrapping_mul(0x2C1B_3C6D);
-    h ^= h >> 12;
-    (h & 0xFFFF) as f32 / 32767.5 - 1.0
+    (h & 0x00FF_FFFF) as f32 / 16_777_215.0
 }
 
-/// Irregular filled blot with a few droplets: spilled ink.
-fn ink_blot(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
-    let pts: Vec<Pos2> = (0..14)
-        .map(|i| {
-            let a = i as f32 / 14.0 * std::f32::consts::TAU;
-            c + Vec2::angled(a) * r * (0.7 + 0.45 * noise(seed + i).abs())
-        })
-        .collect();
-    p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
-    for i in 0..4 {
-        let a = noise(seed + 50 + i) * std::f32::consts::PI;
-        p.circle_filled(
-            c + Vec2::angled(a) * r * 1.5,
-            r * 0.12 * (1.0 + noise(seed + i)),
-            col,
-        );
+/// Smooth value noise in 0..1.
+fn vnoise(x: f32, y: f32, seed: u32) -> f32 {
+    let (xf, yf) = (x.floor(), y.floor());
+    let (fx, fy) = (x - xf, y - yf);
+    let (ux, uy) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let (i, j) = (xf as i32, yf as i32);
+    let top = hash2(i, j, seed) + (hash2(i + 1, j, seed) - hash2(i, j, seed)) * ux;
+    let bot = hash2(i, j + 1, seed) + (hash2(i + 1, j + 1, seed) - hash2(i, j + 1, seed)) * ux;
+    top + (bot - top) * uy
+}
+
+/// Fractal noise in 0..1: cloud-like, the basis for smoke, wash and bleed.
+fn fbm(x: f32, y: f32, octaves: u32, seed: u32) -> f32 {
+    let (mut sum, mut amp, mut norm, mut f) = (0.0, 0.5, 0.0, 1.0);
+    for o in 0..octaves {
+        sum += amp * vnoise(x * f, y * f, seed + o * 17);
+        norm += amp;
+        amp *= 0.5;
+        f *= 2.03;
     }
+    sum / norm
 }
 
-/// Ink on paper, tiled faintly behind the content: splatters, brush strokes and drips.
-fn background_icons(p: &Painter, rect: Rect, t: Tones) {
-    const CELL: f32 = 170.0;
-    let col = |a: u8| Color32::from_rgba_unmultiplied(t.ink.r(), t.ink.g(), t.ink.b(), a);
-    let cols = (rect.width() / CELL).ceil() as i32 + 1;
-    let rows = (rect.height() / CELL).ceil() as i32 + 1;
-    for row in 0..rows {
-        for col_i in 0..cols {
-            let seed = (col_i * 31 + row * 57) as u32 * 101;
-            let c = Pos2::new(
-                rect.left() + (col_i as f32 + 0.5 * (row % 2) as f32) * CELL + noise(seed) * 22.0,
-                rect.top() + (row as f32 + 0.5) * CELL + noise(seed + 1) * 22.0,
-            );
-            match (col_i + row * 2).rem_euclid(3) {
-                0 => doodle_splatter(p, c, 22.0, seed, col(36)),
-                1 => doodle_brush(p, c, 46.0, seed, col(40)),
-                _ => doodle_drip(p, c, 22.0, seed, col(34)),
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Anti-aliased coverage of a shape whose signed edge distance is `d` px (positive = inside).
+fn cover(d: f32) -> f32 {
+    (d + 0.5).clamp(0.0, 1.0)
+}
+
+/// Ink coverage (0 = bare paper, 1 = solid ink) at logical point (x, y) of a w x h page.
+/// Restrained on purpose: bare paper in the middle, ink only gathered in two corners.
+fn ink_at(x: f32, y: f32, w: f32, h: f32) -> f32 {
+    let edge_d = x.min(w - x).min(y).min(h - y);
+    let mut a: f32 = 0.0;
+
+    // Paper: faint fibres and the odd fleck of dust.
+    a += 0.03 * (vnoise(x / 2.2, y / 11.0, 2) - 0.5);
+    if hash2(x as i32, y as i32, 1) > 0.998 {
+        a = a.max(0.4);
+    }
+
+    // Corner weights: ink lives top-right and bottom-left only.
+    let tr = (1.0 - ((x - w).powi(2) + y * y).sqrt() / 240.0).clamp(0.0, 1.0);
+    // Bottom-left accent sits above the footer so the settings path stays readable.
+    let bl = (1.0 - (x * x + (y - (h - 200.0)).powi(2)).sqrt() / 150.0).clamp(0.0, 1.0);
+
+    // Screentone smoke in those corners: 45-degree halftone dots sized by a cloud field.
+    let smoke = smoothstep(0.45, 0.75, fbm(x / 120.0, y / 100.0, 4, 4)) * tr.max(bl).powf(1.5);
+    if smoke > 0.02 {
+        const CELL: f32 = 4.6;
+        let u = (x + y) * std::f32::consts::FRAC_1_SQRT_2 / CELL;
+        let v = (x - y) * std::f32::consts::FRAC_1_SQRT_2 / CELL;
+        let (du, dv) = (u - u.floor() - 0.5, v - v.floor() - 0.5);
+        let dist = (du * du + dv * dv).sqrt() * CELL;
+        a = a.max(cover(smoke.sqrt() * CELL * 0.6 - dist) * 0.85);
+    }
+
+    // Hatching: a few diagonal pen strokes in the bottom-left corner.
+    if bl > 0.0 {
+        const PERIOD: f32 = 5.0;
+        let s = (x * 0.5 + y * 0.866) / PERIOD;
+        let line = s.floor();
+        let along = -x * 0.866 + y * 0.5;
+        let gate = vnoise(line * 0.61, along / 46.0, 11);
+        let present = smoothstep(gate - 0.08, gate + 0.08, bl * 0.9);
+        a = a.max(cover(0.5 - (s - line - 0.5).abs() * PERIOD) * present * 0.8);
+    }
+
+    // A small cluster of ink running down from the top-right corner.
+    let cr = (1.0 - (w - x) / (w * 0.3)).clamp(0.0, 1.0);
+    a = a.max(cover((2.0 + 10.0 * fbm(x / 22.0, 0.5, 3, 23)) * cr - y));
+    const COL: f32 = 9.0;
+    let ci = (x / COL).floor() as i32;
+    for k in ci - 2..=ci + 2 {
+        let cx = (k as f32 + hash2(k, 1, 21)) * COL;
+        let cc = (1.0 - (w - cx) / (w * 0.3)).clamp(0.0, 1.0);
+        if cc <= 0.0 || hash2(k, 0, 21) > 0.2 + 0.6 * cc {
+            continue;
+        }
+        let len = (6.0 + hash2(k, 2, 21).powi(3) * 150.0) * cc;
+        let wd = (0.8 + hash2(k, 3, 21) * 1.6) * (0.6 + cc * 0.6);
+        if y > len + wd * 3.0 {
+            continue;
+        }
+        let dx = (x - cx).abs();
+        let rough = 1.0 + 0.3 * (vnoise(k as f32 * 3.1, y / 5.0, 22) - 0.5);
+        let root = (12.0 - y).max(0.0).powi(2) * 0.02;
+        let half = wd * (1.0 - 0.65 * (y / len).clamp(0.0, 1.0).sqrt()) * rough + root;
+        let body = if y <= len { cover(half - dx) } else { 0.0 };
+        let drop = cover(wd * 1.4 - ((x - cx).powi(2) + (y - len).powi(2)).sqrt());
+        let feather = (-(dx - half).max(0.0) / 2.0).exp() * 0.2 * f32::from(u8::from(y < len));
+        a = a.max(body.max(drop)).max(feather);
+    }
+
+    // Frame: one firm border.
+    a = a.max(cover(3.0 - edge_d));
+
+    a.clamp(0.0, 1.0)
+}
+
+/// Rasterises the ink page at `size` device pixels (`scale` px per point) on all cores.
+fn ink_page(size: [usize; 2], scale: f32, t: Tones) -> egui::ColorImage {
+    let [w, h] = size;
+    let (lw, lh) = (w as f32 / scale, h as f32 / scale);
+    let mut px = vec![t.paper; w * h];
+    let threads = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let rows = h.div_ceil(threads).max(1);
+    let mix = |a: f32, p: u8, i: u8| (f32::from(p) + (f32::from(i) - f32::from(p)) * a) as u8;
+    std::thread::scope(|s| {
+        for (band, chunk) in px.chunks_mut(rows * w).enumerate() {
+            s.spawn(move || {
+                for (i, c) in chunk.iter_mut().enumerate() {
+                    let x = (i % w) as f32 / scale;
+                    let y = (band * rows + i / w) as f32 / scale;
+                    let a = ink_at(x, y, lw, lh);
+                    *c = Color32::from_rgb(
+                        mix(a, t.paper.r(), t.ink.r()),
+                        mix(a, t.paper.g(), t.ink.g()),
+                        mix(a, t.paper.b(), t.ink.b()),
+                    );
+                }
+            });
+        }
+    });
+    egui::ColorImage::new(size, px)
+}
+
+/// The ink page texture, rebuilt when the window size or theme changes.
+#[derive(Default)]
+struct Backdrop {
+    tex: Option<(egui::TextureHandle, [usize; 2], bool)>,
+    want: Option<([usize; 2], Instant)>,
+}
+
+impl Backdrop {
+    fn paint(&mut self, ui: &Ui, rect: Rect) {
+        let dark = ui.visuals().dark_mode;
+        let scale = ui.ctx().pixels_per_point().min(2.0);
+        let size = [
+            ((rect.width() * scale) as usize).max(1),
+            ((rect.height() * scale) as usize).max(1),
+        ];
+        let current = self.tex.as_ref().map(|(_, s, d)| (*s, *d));
+        if current != Some((size, dark)) {
+            // Mid-resize: stretch the old page and rebuild once the size holds for 150 ms.
+            if self.want.is_none_or(|(s, _)| s != size) {
+                self.want = Some((size, Instant::now()));
             }
+            let since = self.want.map_or_else(Instant::now, |(_, at)| at);
+            let settle = current.is_none_or(|(s, _)| s == size);
+            if settle || since.elapsed() > Duration::from_millis(150) {
+                let img = ink_page(size, scale, Tones::of(dark));
+                let tex = ui
+                    .ctx()
+                    .load_texture("ink-page", img, egui::TextureOptions::LINEAR);
+                self.tex = Some((tex, size, dark));
+                self.want = None;
+            } else {
+                ui.ctx().request_repaint_after(Duration::from_millis(160));
+            }
+        }
+        if let Some((tex, ..)) = &self.tex {
+            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+            ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
         }
     }
 }
 
-/// Central blot flung out into droplets.
-fn doodle_splatter(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
-    ink_blot(p, c, r, seed, col);
-    for i in 0..9 {
-        let a = noise(seed + 100 + i) * std::f32::consts::PI;
-        let d = r * (1.6 + 1.6 * noise(seed + 120 + i).abs());
-        p.circle_filled(
-            c + Vec2::angled(a) * d,
-            1.5 + 3.0 * noise(seed + 140 + i).abs(),
-            col,
-        );
-    }
+/// Parallelogram (manga caption plate) leaning right by `skew`.
+fn parallelogram(p: &Painter, r: Rect, skew: f32, fill: Color32, stroke: Stroke) {
+    p.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(r.left() + skew, r.top()),
+            Pos2::new(r.right(), r.top()),
+            Pos2::new(r.right() - skew, r.bottom()),
+            Pos2::new(r.left(), r.bottom()),
+        ],
+        fill,
+        stroke,
+    ));
 }
 
-/// One tapered brush stroke: fat in the middle, pointed at both ends.
-fn doodle_brush(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
-    let dir = Vec2::angled(-0.5 + noise(seed) * 0.4);
-    let normal = Vec2::new(-dir.y, dir.x);
-    let w = 7.0 + 3.0 * noise(seed + 1).abs();
-    let pts = vec![
-        c - dir * r,
-        c - dir * r * 0.4 + normal * w,
-        c + dir * r * 0.5 + normal * w * 0.6,
-        c + dir * r,
-        c + dir * r * 0.5 - normal * w * 0.5,
-        c - dir * r * 0.4 - normal * w,
-    ];
-    p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
-    // Dry-brush bristle streaks trailing off the end.
-    for i in 0..3 {
-        let o = normal * (i as f32 - 1.0) * 4.0;
-        p.line_segment(
-            [c + dir * r + o, c + dir * r * 1.5 + o],
-            Stroke::new(1.0, col),
-        );
-    }
+fn italic_galley(p: &Painter, text: &str, font: FontId, color: Color32) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.into(), font, color);
+    job.sections[0].format.italics = true;
+    p.layout_job(job)
 }
 
-fn doodle_drip(p: &Painter, c: Pos2, r: f32, seed: u32, col: Color32) {
-    ink_blot(p, c - Vec2::new(0.0, r * 0.4), r, seed, col);
-    for i in 0..3 {
-        let x = c.x + (i as f32 - 1.0) * r * 0.5;
-        let len = r * (0.8 + (noise(seed + i) + 1.0));
-        p.rect_filled(
-            Rect::from_min_max(Pos2::new(x - 1.5, c.y), Pos2::new(x + 1.5, c.y + len)),
-            1.5,
-            col,
-        );
-        p.circle_filled(Pos2::new(x, c.y + len), 3.0, col);
-    }
+/// Black caption plate with italic paper-coloured text.
+fn tag(ui: &mut Ui, text: &str, font: FontId) {
+    let t = Tones::ui(ui);
+    let galley = italic_galley(ui.painter(), text, font, t.paper);
+    let (rect, _) = ui.allocate_exact_size(galley.size() + Vec2::new(36.0, 12.0), Sense::hover());
+    let r = rect.shrink2(Vec2::new(3.0, 2.0));
+    parallelogram(ui.painter(), r, 8.0, t.ink, Stroke::NONE);
+    ui.painter()
+        .galley(r.center() - galley.size() / 2.0, galley, t.paper);
 }
 
 // ---------------------------------------------------------------- ui
@@ -537,16 +653,16 @@ impl eframe::App for SettingsApp {
             self.save_now();
         }
         let before = self.cfg.clone();
-        let margin = egui::Frame::new()
-            .fill(Tones::ui(ui).paper)
-            .inner_margin(egui::Margin::symmetric(22, 14));
+        // One ink page behind both panels, fixed to the window so it never scrolls.
+        let page = ui.ctx().content_rect();
+        self.backdrop.paint(ui, page);
+        let margin = egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 14));
 
         egui::Panel::bottom("footer")
             .frame(margin)
             .show(ui, |ui| self.footer(ui));
 
         egui::CentralPanel::default().frame(margin).show(ui, |ui| {
-            background_icons(ui.painter(), ui.max_rect(), Tones::ui(ui));
             egui::ScrollArea::vertical().show(ui, |ui| {
                 self.header(ui);
                 ui.add_space(18.0);
@@ -555,22 +671,29 @@ impl eframe::App for SettingsApp {
                     touchpad_map(ui, &mut self.cfg);
                     ui.add_space(18.0);
                     ui.columns(2, |cols| {
-                        section(&mut cols[0], "02", "Left edge");
-                        zone_controls(
-                            &mut cols[0],
-                            "left",
-                            &mut self.cfg.left_action,
-                            &mut self.cfg.left_edge_ratio,
-                            &mut self.cfg.left_sensitivity,
-                        );
-                        section(&mut cols[1], "03", "Right edge");
-                        zone_controls(
-                            &mut cols[1],
-                            "right",
-                            &mut self.cfg.right_action,
-                            &mut self.cfg.right_edge_ratio,
-                            &mut self.cfg.right_sensitivity,
-                        );
+                        let ink = Stroke::new(2.0, Tones::ui(&cols[0]).ink);
+                        let paper = Tones::ui(&cols[0]).paper;
+                        let boxed = || egui::Frame::new().fill(paper).stroke(ink).inner_margin(8);
+                        boxed().show(&mut cols[0], |ui| {
+                            section(ui, "02", "Left edge");
+                            zone_controls(
+                                ui,
+                                "left",
+                                &mut self.cfg.left_action,
+                                &mut self.cfg.left_edge_ratio,
+                                &mut self.cfg.left_sensitivity,
+                            );
+                        });
+                        boxed().show(&mut cols[1], |ui| {
+                            section(ui, "03", "Right edge");
+                            zone_controls(
+                                ui,
+                                "right",
+                                &mut self.cfg.right_action,
+                                &mut self.cfg.right_edge_ratio,
+                                &mut self.cfg.right_sensitivity,
+                            );
+                        });
                     });
                     ui.add_space(14.0);
                     self.macros_section(ui);
@@ -602,17 +725,7 @@ impl SettingsApp {
     fn header(&mut self, ui: &mut Ui) {
         let t = Tones::ui(ui);
         ui.horizontal(|ui| {
-            // Title plate: paper text on an ink block.
-            let galley = ui.painter().layout_no_wrap(
-                "TOUCHPADFLOW".into(),
-                FontId::new(26.0, display()),
-                t.paper,
-            );
-            let (rect, _) =
-                ui.allocate_exact_size(galley.size() + Vec2::new(24.0, 10.0), Sense::hover());
-            ui.painter().rect_filled(rect, 0, t.ink);
-            ui.painter()
-                .galley(rect.min + Vec2::new(12.0, 5.0), galley, t.paper);
+            tag(ui, "TOUCHPADFLOW", FontId::new(28.0, display()));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.cfg.enabled {
@@ -892,7 +1005,7 @@ impl SettingsApp {
                                 egui::Label::new(
                                     egui::RichText::new(self.path.display().to_string())
                                         .size(11.0)
-                                        .color(t.ink_soft),
+                                        .color(t.ink),
                                 )
                                 .truncate(),
                             );
@@ -908,14 +1021,14 @@ impl SettingsApp {
 fn section(ui: &mut Ui, num: &str, title: &str) {
     let t = Tones::ui(ui);
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("{num} / {}", title.to_uppercase()))
-                .font(FontId::new(12.0, strong()))
-                .color(t.ink),
+        tag(
+            ui,
+            &format!("{num} / {}", title.to_uppercase()),
+            FontId::new(12.0, strong()),
         );
         let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 12.0), Sense::hover());
         ui.painter()
-            .hline(r.x_range(), r.center().y, Stroke::new(1.0, t.rule));
+            .hline(r.x_range(), r.center().y, Stroke::new(2.0, t.ink));
     });
     ui.add_space(4.0);
 }
@@ -1071,20 +1184,6 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
     let pad = rect.shrink(12.0);
     let painter = ui.painter_at(rect);
 
-    for c in [
-        pad.left_top(),
-        pad.right_top(),
-        pad.left_bottom(),
-        pad.right_bottom(),
-    ] {
-        let out = Vec2::new(
-            if c.x < pad.center().x { -6.0 } else { 6.0 },
-            if c.y < pad.center().y { -6.0 } else { 6.0 },
-        );
-        ink_blot(&painter, c + out, 5.0, (c.x * 7.0 + c.y) as u32, t.ink);
-    }
-    painter.rect_filled(pad, 0, t.paper);
-
     let (lo, hi) = EDGE_RATIO_RANGE;
     let zones = [
         (true, cfg.left_action, &mut cfg.left_edge_ratio),
@@ -1101,6 +1200,8 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
             )
         };
         let on = action != EdgeAction::None && cfg.enabled;
+        // Clean paper under the zone so its tone does not moire with the page halftone.
+        painter.rect_filled(zone, 0, t.paper);
         if on {
             screentone(&painter, zone, 7.0, 1.25, t.ink_soft);
         } else {
@@ -1203,22 +1304,30 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
             + (pad.width() * (1.0 - cfg.left_edge_ratio - cfg.right_edge_ratio)) / 2.0,
         pad.center().y,
     );
-    doodle_splatter(&painter, mid, 14.0, 5, t.ink_soft);
+    let rs = Stroke::new(2.0, t.ink_soft);
+    painter.hline((mid.x - 8.0)..=(mid.x + 8.0), mid.y, rs);
+    painter.vline(mid.x, (mid.y - 8.0)..=(mid.y + 8.0), rs);
+    for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+        let c = mid + Vec2::new(sx * 36.0, sy * 36.0);
+        painter.hline(c.x.min(c.x - sx * 10.0)..=c.x.max(c.x - sx * 10.0), c.y, rs);
+        painter.vline(c.x, c.y.min(c.y - sy * 10.0)..=c.y.max(c.y - sy * 10.0), rs);
+    }
     painter.text(
-        mid + Vec2::new(0.0, 40.0),
+        mid + Vec2::new(0.0, 52.0),
         Align2::CENTER_CENTER,
         "POINTER",
         FontId::new(11.0, strong()),
         t.ink_soft,
     );
-    painter.rect_stroke(pad, 0, Stroke::new(4.0, t.ink), StrokeKind::Inside);
+    painter.rect_stroke(pad, 0, Stroke::new(BORDER, t.ink), StrokeKind::Inside);
 
     ui.label(
         egui::RichText::new(
             "Drag a line to resize a zone. Slide two fingers up or down inside it.",
         )
+        .italics()
         .size(11.5)
-        .color(t.ink_soft),
+        .color(t.ink),
     );
 }
 
@@ -1340,6 +1449,21 @@ fn egui_key_name(key: egui::Key) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ink_page_is_dark_at_the_frame_and_light_in_the_middle() {
+        let (w, h) = (660.0, 900.0);
+        let mean = |pts: &mut dyn Iterator<Item = (f32, f32)>| {
+            let v: Vec<f32> = pts.map(|(x, y)| ink_at(x, y, w, h)).collect();
+            v.iter().sum::<f32>() / v.len() as f32
+        };
+        let frame = mean(&mut (0..200).map(|i| (1.0, i as f32 * 4.5)));
+        let middle = mean(&mut (0..200).map(|i| (330.0, 300.0 + i as f32)));
+        assert!(frame > 0.9, "frame {frame}");
+        assert!(middle < 0.35, "middle {middle}");
+        let img = ink_page([66, 90], 1.0, Tones::of(false));
+        assert_eq!(img.size, [66, 90]);
+    }
 
     #[test]
     fn percent_parser_accepts_typed_values() {
