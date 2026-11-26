@@ -61,7 +61,7 @@ MAC_APP="$HOME/Applications/TouchpadFlow.app"
 RULES=/etc/udev/rules.d/70-touchpadflow.rules
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap '[ -t 2 ] && printf "\e[?25h" >&2; rm -rf "$WORK"' EXIT
 STAGE="$WORK/touchpadflow"
 
 stage_download() {
@@ -75,11 +75,70 @@ stage_download() {
     local url="https://github.com/$REPO/releases/latest/download/$asset"
     step "Downloading $asset"
     printf '  %s%s%s\n' "$D" "$url" "$R"
-    # Progress bar on a terminal, silent otherwise.
-    local progress=-sS
-    [ -t 2 ] && progress=--progress-bar
-    curl -fL "$progress" --retry 3 -o "$WORK/$asset" "$url" \
-        || die "no prebuilt download for $OS/$ARCH. Clone the repo and run: ./install.sh --from-source"
+    # Pretty progress bar on a terminal, silent otherwise.
+    if [ -t 2 ]; then
+        local total=0
+        total="$(curl -fsSLI --max-time 3 "$url" 2>/dev/null \
+            | awk 'tolower($1)=="content-length:"{len=$2} END{gsub(/\r/,"",len); print len+0}')" || total=0
+
+        curl -fL -sS --retry 3 -o "$WORK/$asset" "$url" 2>"$WORK/curl.err" &
+        local pid=$!
+        local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+        local width=24 i=0 cur=0 pct=0 filled=0 empty=0 mb="" tot_mb="" bar=""
+
+        printf '\e[?25l' >&2
+        while kill -0 "$pid" 2>/dev/null; do
+            cur=0
+            [ -f "$WORK/$asset" ] && cur=$(wc -c < "$WORK/$asset" | tr -d ' ')
+            local ch="${spin:$((i % 10)):1}"
+            mb=$(awk -v b="$cur" 'BEGIN{printf "%.1f", b/1048576}')
+            bar=""
+
+            if [ "$total" -gt 0 ]; then
+                pct=$((cur * 100 / total))
+                [ "$pct" -gt 100 ] && pct=100
+                filled=$((pct * width / 100))
+                empty=$((width - filled))
+                local k=0
+                while [ "$k" -lt "$filled" ]; do bar="${bar}━"; k=$((k + 1)); done
+                local rest=""
+                k=0
+                while [ "$k" -lt "$empty" ]; do rest="${rest}─"; k=$((k + 1)); done
+                tot_mb=$(awk -v b="$total" 'BEGIN{printf "%.1f", b/1048576}')
+                printf '\r\e[2K  %s%s%s %s%s%s%s%s  %s%3d%%%s  %s%s / %s MB%s' \
+                    "$CYN$B" "$ch" "$R" "$CYN$B" "$bar" "$R" "$D" "$rest" \
+                    "$B" "$pct" "$R" "$D" "$mb" "$tot_mb" "$R" >&2
+            else
+                local pos=$((i % (width - 5)))
+                local k=0
+                while [ "$k" -lt "$width" ]; do
+                    if [ "$k" -ge "$pos" ] && [ "$k" -lt $((pos + 5)) ]; then
+                        bar="${bar}${CYN}${B}━${R}"
+                    else
+                        bar="${bar}${D}─${R}"
+                    fi
+                    k=$((k + 1))
+                done
+                printf '\r\e[2K  %s%s%s %s  %s%s MB%s' \
+                    "$CYN$B" "$ch" "$R" "$bar" "$D" "$mb" "$R" >&2
+            fi
+            i=$((i + 1))
+            sleep 0.08
+        done
+        printf '\r\e[2K\e[?25h' >&2
+
+        if ! wait "$pid"; then
+            cat "$WORK/curl.err" >&2
+            die "no prebuilt download for $OS/$ARCH. Clone the repo and run: ./install.sh --from-source"
+        fi
+        cur=0
+        [ -f "$WORK/$asset" ] && cur=$(wc -c < "$WORK/$asset" | tr -d ' ')
+        mb=$(awk -v b="$cur" 'BEGIN{printf "%.1f", b/1048576}')
+        ok "Downloaded $asset (${mb} MB)"
+    else
+        curl -fL -sS --retry 3 -o "$WORK/$asset" "$url" \
+            || die "no prebuilt download for $OS/$ARCH. Clone the repo and run: ./install.sh --from-source"
+    fi
     tar -xzf "$WORK/$asset" -C "$WORK"
 }
 
