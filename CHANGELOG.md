@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased] - 2026-11-25
 
+### Added
+- **Look settings:** System, Light, Dark and the new **Sumi** theme (washi paper, sumi ink, vermilion seal accent), plus an "Ink page" on/off toggle (`ink_page` in the config).
+- **Ink page:** a procedurally rendered ink background (drips, halftone, hatching) fixed behind the settings window.
+- **Update button** in the settings app, and a coloured, animated Windows installer.
+
 ### Fixed
 - **Cursor jumps / lag on battery:** removed the 400 ms "stuck contact" watchdog. Idle pads (common on battery power saving) send no frames for a resting finger, so the watchdog lifted real touches mid-gesture.
 - **Finger-lift frames were never forwarded:** the session-end frame was discarded before passthrough, so libinput kept a phantom finger down.

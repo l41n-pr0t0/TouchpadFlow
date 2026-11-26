@@ -20,6 +20,8 @@ pub enum ThemeMode {
     System,
     Light,
     Dark,
+    /// Washi paper, sumi ink and a vermilion seal accent.
+    Sumi,
 }
 
 /// A custom gesture-to-action macro rule, optionally scoped to specific apps.
@@ -99,6 +101,10 @@ pub struct AppConfig {
     /// UI theme preference for the settings app.
     #[serde(default)]
     pub theme: ThemeMode,
+
+    /// Draw the ink page (drips, halftone, hatching) behind the settings app.
+    #[serde(default = "default_true")]
+    pub ink_page: bool,
 
     /// Custom gesture macros (optionally scoped to specific apps).
     #[serde(default)]
@@ -255,6 +261,7 @@ mod tests {
         assert_eq!(c.left_action, EdgeAction::Brightness);
         assert_eq!(c.right_action, EdgeAction::Volume);
         assert_eq!(c.theme, ThemeMode::System);
+        assert!(c.ink_page);
     }
 
     #[test]

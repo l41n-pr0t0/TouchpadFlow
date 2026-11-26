@@ -59,13 +59,15 @@ fn run(renderer: eframe::Renderer) -> eframe::Result {
 
 // ---------------------------------------------------------------- theme
 
-/// Exactly four tones, like a 2-bit print. Dark mode swaps them end for end.
-#[derive(Clone, Copy)]
+/// Four tones like a 2-bit print, plus one accent. Dark swaps the tones end for end;
+/// only Sumi gives the accent its own colour.
+#[derive(Clone, Copy, PartialEq)]
 struct Tones {
     ink: Color32,
     ink_soft: Color32,
     rule: Color32,
     paper: Color32,
+    accent: Color32,
 }
 
 const C0: Color32 = Color32::from_rgb(0x0c, 0x0c, 0x0b);
@@ -74,25 +76,36 @@ const C2: Color32 = Color32::from_rgb(0x9b, 0x9b, 0x98);
 const C3: Color32 = Color32::from_rgb(0xe6, 0xe6, 0xe2);
 
 impl Tones {
+    const LIGHT: Self = Self {
+        ink: C0,
+        ink_soft: C1,
+        rule: C2,
+        paper: C3,
+        accent: C0,
+    };
+    const DARK: Self = Self {
+        ink: C3,
+        ink_soft: C2,
+        rule: C1,
+        paper: C0,
+        accent: C3,
+    };
+    /// Warm washi paper, brown-black sumi ink, and a vermilion hanko-seal red.
+    const SUMI: Self = Self {
+        ink: Color32::from_rgb(0x22, 0x1e, 0x19),
+        ink_soft: Color32::from_rgb(0x5c, 0x53, 0x48),
+        rule: Color32::from_rgb(0xb0, 0xa3, 0x8c),
+        paper: Color32::from_rgb(0xec, 0xe3, 0xcf),
+        accent: Color32::from_rgb(0xb4, 0x32, 0x1e),
+    };
+
     fn of(dark: bool) -> Self {
-        if dark {
-            Self {
-                ink: C3,
-                ink_soft: C2,
-                rule: C1,
-                paper: C0,
-            }
-        } else {
-            Self {
-                ink: C0,
-                ink_soft: C1,
-                rule: C2,
-                paper: C3,
-            }
-        }
+        if dark { Self::DARK } else { Self::LIGHT }
     }
+    /// The tones chosen for this frame (see `SettingsApp::ui`), else light/dark from visuals.
     fn ui(ui: &Ui) -> Self {
-        Self::of(ui.visuals().dark_mode)
+        ui.data(|d| d.get_temp(egui::Id::NULL))
+            .unwrap_or_else(|| Self::of(ui.visuals().dark_mode))
     }
 }
 
@@ -143,8 +156,7 @@ fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn visuals(dark: bool) -> Visuals {
-    let t = Tones::of(dark);
+fn visuals(t: Tones, dark: bool) -> Visuals {
     let mut v = if dark {
         Visuals::dark()
     } else {
@@ -166,7 +178,7 @@ fn visuals(dark: bool) -> Visuals {
     };
     v.popup_shadow = hard;
     v.window_shadow = hard;
-    v.selection.bg_fill = t.ink;
+    v.selection.bg_fill = t.accent; // also the filled part of slider rails
     v.selection.stroke = Stroke::new(1.0, t.paper);
     v.hyperlink_color = t.ink;
     v.warn_fg_color = t.ink;
@@ -206,7 +218,7 @@ fn visuals(dark: bool) -> Visuals {
 fn to_egui_theme(mode: ThemeMode) -> egui::ThemePreference {
     match mode {
         ThemeMode::System => egui::ThemePreference::System,
-        ThemeMode::Light => egui::ThemePreference::Light,
+        ThemeMode::Light | ThemeMode::Sumi => egui::ThemePreference::Light,
         ThemeMode::Dark => egui::ThemePreference::Dark,
     }
 }
@@ -220,8 +232,14 @@ fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
         _ => to_egui_theme(mode),
     };
     ctx.set_theme(pref);
+    let light = if mode == ThemeMode::Sumi {
+        Tones::SUMI
+    } else {
+        Tones::LIGHT
+    };
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
-        ctx.set_visuals_of(theme, visuals(theme == egui::Theme::Dark));
+        let dark = theme == egui::Theme::Dark;
+        ctx.set_visuals_of(theme, visuals(if dark { Tones::DARK } else { light }, dark));
         ctx.style_mut_of(theme, |style| {
             use FontFamily::Proportional;
             style.text_styles = [
@@ -576,20 +594,19 @@ fn ink_page(size: [usize; 2], scale: f32, t: Tones) -> egui::ColorImage {
 /// The ink page texture, rebuilt when the window size or theme changes.
 #[derive(Default)]
 struct Backdrop {
-    tex: Option<(egui::TextureHandle, [usize; 2], bool)>,
+    tex: Option<(egui::TextureHandle, [usize; 2], Tones)>,
     want: Option<([usize; 2], Instant)>,
 }
 
 impl Backdrop {
-    fn paint(&mut self, ui: &Ui, rect: Rect) {
-        let dark = ui.visuals().dark_mode;
+    fn paint(&mut self, ui: &Ui, rect: Rect, t: Tones) {
         let scale = ui.ctx().pixels_per_point().min(2.0);
         let size = [
             ((rect.width() * scale) as usize).max(1),
             ((rect.height() * scale) as usize).max(1),
         ];
         let current = self.tex.as_ref().map(|(_, s, d)| (*s, *d));
-        if current != Some((size, dark)) {
+        if current != Some((size, t)) {
             // Mid-resize: stretch the old page and rebuild once the size holds for 150 ms.
             if self.want.is_none_or(|(s, _)| s != size) {
                 self.want = Some((size, Instant::now()));
@@ -597,11 +614,11 @@ impl Backdrop {
             let since = self.want.map_or_else(Instant::now, |(_, at)| at);
             let settle = current.is_none_or(|(s, _)| s == size);
             if settle || since.elapsed() > Duration::from_millis(150) {
-                let img = ink_page(size, scale, Tones::of(dark));
+                let img = ink_page(size, scale, t);
                 let tex = ui
                     .ctx()
                     .load_texture("ink-page", img, egui::TextureOptions::LINEAR);
-                self.tex = Some((tex, size, dark));
+                self.tex = Some((tex, size, t));
                 self.want = None;
             } else {
                 ui.ctx().request_repaint_after(Duration::from_millis(160));
@@ -634,13 +651,13 @@ fn italic_galley(p: &Painter, text: &str, font: FontId, color: Color32) -> Arc<e
     p.layout_job(job)
 }
 
-/// Black caption plate with italic paper-coloured text.
-fn tag(ui: &mut Ui, text: &str, font: FontId) {
+/// Caption plate filled with `fill`, italic paper-coloured text.
+fn tag(ui: &mut Ui, text: &str, font: FontId, fill: Color32) {
     let t = Tones::ui(ui);
     let galley = italic_galley(ui.painter(), text, font, t.paper);
     let (rect, _) = ui.allocate_exact_size(galley.size() + Vec2::new(36.0, 12.0), Sense::hover());
     let r = rect.shrink2(Vec2::new(3.0, 2.0));
-    parallelogram(ui.painter(), r, 8.0, t.ink, Stroke::NONE);
+    parallelogram(ui.painter(), r, 8.0, fill, Stroke::NONE);
     ui.painter()
         .galley(r.center() - galley.size() / 2.0, galley, t.paper);
 }
@@ -653,9 +670,23 @@ impl eframe::App for SettingsApp {
             self.save_now();
         }
         let before = self.cfg.clone();
+        let tones = if self.cfg.theme == ThemeMode::Sumi {
+            Tones::SUMI
+        } else {
+            Tones::of(ui.visuals().dark_mode)
+        };
+        ui.data_mut(|d| d.insert_temp(egui::Id::NULL, tones));
+
         // One ink page behind both panels, fixed to the window so it never scrolls.
         let page = ui.ctx().content_rect();
-        self.backdrop.paint(ui, page);
+        if self.cfg.ink_page {
+            self.backdrop.paint(ui, page, tones);
+        } else {
+            ui.painter().rect_filled(page, 0, tones.paper);
+            let border = Stroke::new(3.0, tones.ink);
+            ui.painter()
+                .rect_stroke(page, 0, border, StrokeKind::Inside);
+        }
         let margin = egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 14));
 
         egui::Panel::bottom("footer")
@@ -700,6 +731,8 @@ impl eframe::App for SettingsApp {
                     ui.add_space(14.0);
                     self.advanced(ui);
                 });
+                ui.add_space(14.0);
+                self.look(ui);
             });
         });
 
@@ -725,7 +758,8 @@ impl SettingsApp {
     fn header(&mut self, ui: &mut Ui) {
         let t = Tones::ui(ui);
         ui.horizontal(|ui| {
-            tag(ui, "TOUCHPADFLOW", FontId::new(28.0, display()));
+            let ink = Tones::ui(ui).ink;
+            tag(ui, "TOUCHPADFLOW", FontId::new(28.0, display()), ink);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.cfg.enabled {
@@ -740,25 +774,6 @@ impl SettingsApp {
                 });
                 if resp.clicked() {
                     self.cfg.enabled = !self.cfg.enabled;
-                }
-
-                let dark = ui.visuals().dark_mode;
-                let (theme_label, theme_hint) = if dark {
-                    ("DARK", "Switch to light theme")
-                } else {
-                    ("LIGHT", "Switch to dark theme")
-                };
-                let theme_resp = ink_button(ui, theme_label, dark).on_hover_text(theme_hint);
-                theme_resp
-                    .widget_info(|| WidgetInfo::selected(Role::CheckBox, true, dark, "Dark theme"));
-                if theme_resp.clicked() {
-                    let next = if dark {
-                        ThemeMode::Light
-                    } else {
-                        ThemeMode::Dark
-                    };
-                    self.cfg.theme = next;
-                    ui.ctx().set_theme(to_egui_theme(next));
                 }
             });
         });
@@ -929,6 +944,48 @@ impl SettingsApp {
         }
     }
 
+    fn look(&mut self, ui: &mut Ui) {
+        section(ui, "06", "Look");
+        ui.horizontal_wrapped(|ui| {
+            for (mode, label, hint) in [
+                (
+                    ThemeMode::System,
+                    "SYSTEM",
+                    "Follow the system light/dark setting",
+                ),
+                (ThemeMode::Light, "LIGHT", "Black ink on grey paper"),
+                (ThemeMode::Dark, "DARK", "The same print in negative"),
+                (
+                    ThemeMode::Sumi,
+                    "SUMI",
+                    "Washi paper, sumi ink and a vermilion seal",
+                ),
+            ] {
+                let on = self.cfg.theme == mode;
+                let resp = ink_button(ui, label, on).on_hover_text(hint);
+                resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, on, label));
+                if resp.clicked() && !on {
+                    self.cfg.theme = mode;
+                    apply_theme(ui.ctx(), mode);
+                }
+            }
+        });
+        ui.add_space(6.0);
+        let label = if self.cfg.ink_page {
+            "INK PAGE  ON"
+        } else {
+            "INK PAGE  OFF"
+        };
+        let resp = ink_button(ui, label, self.cfg.ink_page)
+            .on_hover_text("Drips, halftone and hatching behind the settings");
+        resp.widget_info(|| {
+            WidgetInfo::selected(Role::CheckBox, true, self.cfg.ink_page, "Ink page")
+        });
+        if resp.clicked() {
+            self.cfg.ink_page = !self.cfg.ink_page;
+        }
+    }
+
     fn advanced(&mut self, ui: &mut Ui) {
         egui::CollapsingHeader::new(
             egui::RichText::new("05 / ADVANCED").font(FontId::new(12.0, strong())),
@@ -979,7 +1036,7 @@ impl SettingsApp {
                     .clicked()
                 {
                     self.cfg = AppConfig::default();
-                    ui.ctx().set_theme(to_egui_theme(self.cfg.theme));
+                    apply_theme(ui.ctx(), self.cfg.theme);
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     match &self.notice {
@@ -1025,6 +1082,7 @@ fn section(ui: &mut Ui, num: &str, title: &str) {
             ui,
             &format!("{num} / {}", title.to_uppercase()),
             FontId::new(12.0, strong()),
+            t.accent,
         );
         let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 12.0), Sense::hover());
         ui.painter()
@@ -1053,7 +1111,7 @@ fn ink_button(ui: &mut Ui, text: &str, inverted: bool) -> Response {
     }
     let hovered = resp.hovered() && ui.is_enabled();
     let (fill, fg) = match (inverted, hovered) {
-        (true, _) => (t.ink, t.paper),
+        (true, _) => (t.accent, t.paper),
         (false, true) => (t.rule, t.ink),
         (false, false) => (t.paper, t.ink),
     };
@@ -1484,5 +1542,6 @@ mod tests {
             egui::ThemePreference::Light
         );
         assert_eq!(to_egui_theme(ThemeMode::Dark), egui::ThemePreference::Dark);
+        assert_eq!(to_egui_theme(ThemeMode::Sumi), egui::ThemePreference::Light);
     }
 }
