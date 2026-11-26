@@ -45,6 +45,11 @@ pub struct GestureEngine {
     last_avg_y: Option<f64>,
     start_avg_x: Option<f64>,
     start_avg_y: Option<f64>,
+    /// Set after a swipe fires a macro: (x, y, horizontal). Each further
+    /// `discrete_threshold` along that axis fires again, so a long slide repeats.
+    repeat_anchor: Option<(f64, f64, bool)>,
+    /// Focused window looked up once per gesture, not on every repeat.
+    window_cache: Option<Option<String>>,
 
     volume: VolumeController,
     brightness: BrightnessController,
@@ -79,11 +84,19 @@ impl GestureEngine {
             last_avg_y: None,
             start_avg_x: None,
             start_avg_y: None,
+            repeat_anchor: None,
+            window_cache: None,
 
             volume,
             brightness,
             output,
         }
+    }
+
+    /// The output the engine writes to (tests read the dummy's recorded key taps).
+    #[must_use]
+    pub fn output(&self) -> &VirtualOutput {
+        &self.output
     }
 
     /// Dynamic live reload of configuration
@@ -213,6 +226,8 @@ impl GestureEngine {
             self.last_avg_y = None;
             self.start_avg_x = None;
             self.start_avg_y = None;
+            self.repeat_anchor = None;
+            self.window_cache = None;
 
             match count {
                 // Only touches that land in an edge zone wait for a possible second finger;
@@ -354,45 +369,48 @@ impl GestureEngine {
                     self.brightness.adjust(step);
                 }
             }
-            SessionMode::Gesture3 => {
-                if !self.discrete_fired && dist > self.config.discrete_threshold {
-                    if total_dx.abs() > total_dy.abs() {
-                        if total_dx > 0.0 {
-                            self.fire_action("swipe3_right")?;
-                        } else {
-                            self.fire_action("swipe3_left")?;
+            SessionMode::Gesture3 | SessionMode::Gesture4 => {
+                let fingers = if self.session_mode == SessionMode::Gesture3 {
+                    3
+                } else {
+                    4
+                };
+                let step = self.config.discrete_threshold;
+                if let Some((ax, ay, horizontal)) = self.repeat_anchor {
+                    // A macro swipe keeps firing every `step` along its axis; sliding back
+                    // fires the opposite direction (e.g. ctrl+tab / ctrl+shift+tab).
+                    let d = if horizontal { avg_x - ax } else { avg_y - ay };
+                    if d.abs() >= step {
+                        let (dx, dy) = if horizontal { (d, 0.0) } else { (0.0, d) };
+                        if let Some(name) = swipe_name(fingers, dx, dy) {
+                            self.fire_action(name)?;
                         }
-                    } else if total_dy.abs() > total_dx.abs() {
-                        let vertical_gesture = if total_dy < 0.0 {
-                            "swipe3_up"
+                        let moved = step.copysign(d);
+                        self.repeat_anchor = Some(if horizontal {
+                            (ax + moved, ay, true)
                         } else {
-                            "swipe3_down"
-                        };
-                        if let Some(act) = self.resolve_gesture_action(vertical_gesture) {
-                            self.run_action_string(&act)?;
-                        } else {
-                            let step = -dy / self.metrics.height() * self.config.right_sensitivity;
-                            self.volume.adjust(step);
+                            (ax, ay + moved, false)
+                        });
+                    }
+                } else if !self.discrete_fired && dist > step {
+                    if let Some(name) = swipe_name(fingers, total_dx, total_dy) {
+                        let horizontal = total_dx.abs() > total_dy.abs();
+                        if self.resolve_macro_action(name).is_some() {
+                            self.repeat_anchor = Some((avg_x, avg_y, horizontal));
+                        }
+                        match self.resolve_gesture_action(name) {
+                            Some(act) => self.run_action_string(&act)?,
+                            // An unbound three-finger vertical swipe nudges the volume.
+                            None if fingers == 3 && !horizontal => {
+                                let nudge =
+                                    -dy / self.metrics.height() * self.config.right_sensitivity;
+                                self.volume.adjust(nudge);
+                            }
+                            None => {}
                         }
                     }
                     self.discrete_fired = true;
                 }
-            }
-            SessionMode::Gesture4
-                if !self.discrete_fired && dist > self.config.discrete_threshold =>
-            {
-                if total_dx.abs() > total_dy.abs() {
-                    if total_dx > 0.0 {
-                        self.fire_action("swipe4_right")?;
-                    } else {
-                        self.fire_action("swipe4_left")?;
-                    }
-                } else if total_dy < 0.0 {
-                    self.fire_action("swipe4_up")?;
-                } else {
-                    self.fire_action("swipe4_down")?;
-                }
-                self.discrete_fired = true;
             }
             _ => {}
         }
@@ -418,16 +436,30 @@ impl GestureEngine {
         self.last_avg_y = None;
         self.start_avg_x = None;
         self.start_avg_y = None;
+        self.repeat_anchor = None;
+        self.window_cache = None;
 
         Ok(())
     }
 
-    fn resolve_gesture_action(&self, action_name: &str) -> Option<String> {
+    fn resolve_gesture_action(&mut self, action_name: &str) -> Option<String> {
         self.resolve_macro_action(action_name)
             .or_else(|| self.config.shortcuts.get(action_name).cloned())
     }
 
-    fn resolve_macro_action(&self, action_name: &str) -> Option<String> {
+    fn resolve_macro_action(&mut self, action_name: &str) -> Option<String> {
+        let needs_window = self
+            .config
+            .macros
+            .iter()
+            .any(|m| m.enabled && m.gesture == action_name && !m.apps.is_empty());
+        let active = if needs_window {
+            self.window_cache
+                .get_or_insert_with(crate::macros::active_window_info)
+                .clone()
+        } else {
+            None
+        };
         let candidates: Vec<&crate::config::MacroRule> = self
             .config
             .macros
@@ -437,12 +469,6 @@ impl GestureEngine {
         if candidates.is_empty() {
             return None;
         }
-        let needs_window = candidates.iter().any(|m| !m.apps.is_empty());
-        let active = if needs_window {
-            crate::macros::active_window_info()
-        } else {
-            None
-        };
         // Prefer app-specific rules over global rules.
         if let Some(m) = candidates
             .iter()
@@ -527,6 +553,24 @@ impl GestureEngine {
         }
         Ok(())
     }
+}
+
+/// `swipe{fingers}_{direction}` for a movement, by its dominant axis (None on a tie).
+fn swipe_name(fingers: usize, dx: f64, dy: f64) -> Option<&'static str> {
+    let horizontal = dx.abs() > dy.abs();
+    if dx.abs() == dy.abs() {
+        return None;
+    }
+    Some(match (fingers, horizontal, dx > 0.0, dy < 0.0) {
+        (3, true, true, _) => "swipe3_right",
+        (3, true, false, _) => "swipe3_left",
+        (3, false, _, true) => "swipe3_up",
+        (3, false, _, false) => "swipe3_down",
+        (_, true, true, _) => "swipe4_right",
+        (_, true, false, _) => "swipe4_left",
+        (_, false, _, true) => "swipe4_up",
+        (_, false, _, false) => "swipe4_down",
+    })
 }
 
 fn edge_mode(action: EdgeAction, sensitivity: f64) -> Option<(SessionMode, f64)> {

@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-11-27
+
+### Added
+- **Repeating macro swipes:** a swipe bound to a macro keeps firing every swipe-distance step while you slide, and sliding back fires the opposite direction. Bind three-finger right to `ctrl+tab` and left to `ctrl+shift+tab` to glide through browser tabs. Built-in shortcuts (media keys, desktops) still fire once.
+- The settings app warns when per-app macros cannot work on KDE because `kdotool` is missing.
+
+### Changed
+- The **Update** button moved to the top right, next to Gestures.
+- **Material theme replaces Sumi:** Material 3 from Sung (tonal surfaces, Google Sans Flex, 40px pill buttons, filled cards, thick tonal sliders) in neutral greys, following the system light/dark setting. Configs saved with `"sumi"` or `"glass"` load as Material.
+- **System theme now works on Linux:** System and Material follow the desktop's light/dark preference (read from the settings portal, KDE and GNOME), switching live; before, Linux always fell back to dark.
+- The "Ink page" toggle is now **Background** (print themes only).
+- Unknown theme names in the config fall back to System instead of failing the whole load. (A 0.4.0 engine rejected the whole file when the app saved a newer theme name, silently keeping old zone and macro settings.)
+- The focused window is looked up once per gesture instead of on every action.
+
 ## [0.4.0] - 2026-11-26
 
 ### Added

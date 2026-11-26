@@ -289,3 +289,94 @@ fn test_edge_actions_follow_config_and_none_disables_zone() {
     two_fingers(&mut engine, 920, 10);
     assert_eq!(engine.session_mode(), SessionMode::Pointer);
 }
+
+/// Three fingers down at (x, 500), then slide them horizontally through `xs`, then lift.
+fn three_finger_slide(engine: &mut GestureEngine, start: i32, xs: &[i32]) {
+    for (slot, id) in [(0, 21), (1, 22), (2, 23)] {
+        engine.handle_event(ev_slot(slot)).unwrap();
+        engine.handle_event(ev_tracking_id(id)).unwrap();
+        engine.handle_event(ev_x(start + slot * 40)).unwrap();
+        engine.handle_event(ev_y(500)).unwrap();
+    }
+    engine.handle_event(ev_syn()).unwrap();
+    for &x in xs {
+        for slot in 0..3 {
+            engine.handle_event(ev_slot(slot)).unwrap();
+            engine.handle_event(ev_x(x + slot * 40)).unwrap();
+        }
+        engine.handle_event(ev_syn()).unwrap();
+    }
+    for slot in 0..3 {
+        engine.handle_event(ev_slot(slot)).unwrap();
+        engine.handle_event(ev_tracking_id(-1)).unwrap();
+    }
+    engine.handle_event(ev_syn()).unwrap();
+}
+
+fn macro_rule(gesture: &str, action: &str) -> touchpadflow::config::MacroRule {
+    touchpadflow::config::MacroRule {
+        enabled: true,
+        name: String::new(),
+        apps: Vec::new(),
+        gesture: gesture.into(),
+        action: action.into(),
+    }
+}
+
+#[test]
+fn test_macro_swipe_repeats_with_distance_and_reverses() {
+    let config = AppConfig {
+        macros: vec![
+            macro_rule("swipe3_right", "ctrl+tab"),
+            macro_rule("swipe3_left", "ctrl+shift+tab"),
+        ],
+        ..AppConfig::default()
+    };
+    let metrics = TouchpadMetrics {
+        min_x: 0,
+        max_x: 1000,
+        min_y: 0,
+        max_y: 1000,
+    };
+    let mut engine = GestureEngine::new(
+        config,
+        metrics,
+        VolumeController::detached(),
+        BrightnessController::detached(),
+        VirtualOutput::dummy(),
+    );
+
+    // Default discrete_threshold is 120: slide right 3 steps (360+), then back 2 steps.
+    let path: Vec<i32> = (300..=680)
+        .step_by(20)
+        .chain((440..=660).rev().step_by(20))
+        .collect();
+    three_finger_slide(&mut engine, 300, &path);
+
+    let taps = &engine.output().tapped;
+    let shift = evdev::KeyCode::KEY_LEFTSHIFT;
+    let forward = taps
+        .iter()
+        .filter(|(m, k)| *k == evdev::KeyCode::KEY_TAB && !m.contains(&shift))
+        .count();
+    let back = taps
+        .iter()
+        .filter(|(m, k)| *k == evdev::KeyCode::KEY_TAB && m.contains(&shift))
+        .count();
+    assert_eq!(forward, 3, "three tabs forward, got {taps:?}");
+    assert_eq!(back, 2, "two tabs back, got {taps:?}");
+}
+
+#[test]
+fn test_built_in_shortcut_swipe_still_fires_once() {
+    let (mut engine, _, _) = make_test_engine();
+    // Default swipe3_right is key:KEY_NEXTSONG; a long slide must not skip several tracks.
+    let path: Vec<i32> = (300..=760).step_by(20).collect();
+    three_finger_slide(&mut engine, 300, &path);
+    assert_eq!(
+        engine.output().tapped.len(),
+        1,
+        "{:?}",
+        engine.output().tapped
+    );
+}

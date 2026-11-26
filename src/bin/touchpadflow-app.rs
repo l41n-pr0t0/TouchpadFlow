@@ -126,8 +126,8 @@ fn run(renderer: eframe::Renderer) -> eframe::Result {
 
 // ---------------------------------------------------------------- theme
 
-/// Four tones like a 2-bit print, plus one accent. Dark swaps the tones end for end;
-/// only Sumi gives the accent its own colour.
+/// Four tones like a 2-bit print, plus an accent. Dark swaps the tones end for end.
+/// Material maps its roles onto the same slots (see DESIGN.md › Material).
 #[derive(Clone, Copy, PartialEq)]
 struct Tones {
     ink: Color32,
@@ -135,6 +135,13 @@ struct Tones {
     rule: Color32,
     paper: Color32,
     accent: Color32,
+    /// Text on an `ink` or `accent` fill.
+    on_accent: Color32,
+    /// Page colour when the background art is off (Material's surface).
+    bg: Color32,
+    /// Tonal fill for active areas (Material's primaryContainer).
+    accent_container: Color32,
+    material: bool,
 }
 
 const C0: Color32 = Color32::from_rgb(0x0c, 0x0c, 0x0b);
@@ -149,6 +156,10 @@ impl Tones {
         rule: C2,
         paper: C3,
         accent: C0,
+        on_accent: C3,
+        bg: C3,
+        accent_container: C2,
+        material: false,
     };
     const DARK: Self = Self {
         ink: C3,
@@ -156,15 +167,41 @@ impl Tones {
         rule: C1,
         paper: C0,
         accent: C3,
+        on_accent: C0,
+        bg: C0,
+        accent_container: C1,
+        material: false,
     };
-    /// Warm washi paper, brown-black sumi ink, and a vermilion hanko-seal red.
-    const SUMI: Self = Self {
-        ink: Color32::from_rgb(0x22, 0x1e, 0x19),
-        ink_soft: Color32::from_rgb(0x5c, 0x53, 0x48),
-        rule: Color32::from_rgb(0xb0, 0xa3, 0x8c),
-        paper: Color32::from_rgb(0xec, 0xe3, 0xcf),
-        accent: Color32::from_rgb(0xb4, 0x32, 0x1e),
+    /// Material 3 with a neutral (grey) seed: Sung's roles and tone steps, no hue.
+    /// Light uses tones 98/94/10/30/80 for the surfaces and text, primary at tone 25.
+    const M3_LIGHT: Self = Self {
+        ink: Color32::from_rgb(0x1b, 0x1b, 0x1b), // onSurface (N10)
+        ink_soft: Color32::from_rgb(0x47, 0x47, 0x47), // onSurfaceVariant (NV30)
+        rule: Color32::from_rgb(0xc6, 0xc6, 0xc6), // outlineVariant (NV80)
+        paper: Color32::from_rgb(0xee, 0xee, 0xee), // surfaceContainer (N94)
+        accent: Color32::from_rgb(0x3b, 0x3b, 0x3b), // primary (tone 25)
+        on_accent: Color32::from_rgb(0xff, 0xff, 0xff), // onPrimary
+        bg: Color32::from_rgb(0xf9, 0xf9, 0xf9),  // surface (N98)
+        accent_container: Color32::from_rgb(0xdc, 0xdc, 0xdc), // primaryContainer (tone 87)
+        material: true,
     };
+    /// Neutral dark scheme: surfaces at tones 6/12, text at 90/80, primary at tone 90.
+    const M3_DARK: Self = Self {
+        ink: Color32::from_rgb(0xe2, 0xe2, 0xe2),
+        ink_soft: Color32::from_rgb(0xc6, 0xc6, 0xc6),
+        rule: Color32::from_rgb(0x47, 0x47, 0x47),
+        paper: Color32::from_rgb(0x1f, 0x1f, 0x1f),
+        accent: Color32::from_rgb(0xe2, 0xe2, 0xe2),
+        on_accent: Color32::from_rgb(0x1b, 0x1b, 0x1b),
+        bg: Color32::from_rgb(0x13, 0x13, 0x13),
+        accent_container: Color32::from_rgb(0x3b, 0x3b, 0x3b),
+        material: true,
+    };
+
+    /// Corner radius for panes and controls: square print, Material's medium shape (12).
+    fn radius(self) -> u8 {
+        if self.material { 12 } else { 0 }
+    }
 
     fn of(dark: bool) -> Self {
         if dark { Self::DARK } else { Self::LIGHT }
@@ -183,9 +220,13 @@ fn strong() -> FontFamily {
     FontFamily::Name("strong".into())
 }
 
-fn install_fonts(ctx: &egui::Context) {
+fn install_fonts(ctx: &egui::Context, material: bool) {
     let mut fonts = FontDefinitions::default();
     for (name, bytes) in [
+        (
+            "google-sans-flex",
+            &include_bytes!("../../assets/fonts/GoogleSansFlex.ttf")[..],
+        ),
         (
             "plex",
             &include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf")[..],
@@ -204,8 +245,14 @@ fn install_fonts(ctx: &egui::Context) {
             .insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
     // Keep egui's bundled fonts as fallback for glyphs the mono faces lack.
+    // Material sets everything in Google Sans Flex; the print themes stay monospaced.
+    let (body, head, label) = if material {
+        ("google-sans-flex", "google-sans-flex", "google-sans-flex")
+    } else {
+        ("plex", "space-mono-bold", "plex-semibold")
+    };
     for (family, first) in [
-        (FontFamily::Proportional, "plex"),
+        (FontFamily::Proportional, body),
         (FontFamily::Monospace, "plex"),
     ] {
         fonts
@@ -215,7 +262,7 @@ fn install_fonts(ctx: &egui::Context) {
             .insert(0, first.into());
     }
     let fallback = fonts.families[&FontFamily::Proportional].clone();
-    for (family, first) in [(display(), "space-mono-bold"), (strong(), "plex-semibold")] {
+    for (family, first) in [(display(), head), (strong(), label)] {
         let mut list = vec![first.to_string()];
         list.extend(fallback.iter().cloned());
         fonts.families.insert(family, list);
@@ -229,34 +276,52 @@ fn visuals(t: Tones, dark: bool) -> Visuals {
     } else {
         Visuals::light()
     };
+    let r = CornerRadius::same(t.radius());
     v.panel_fill = t.paper;
     v.window_fill = t.paper;
     v.extreme_bg_color = t.paper;
     v.faint_bg_color = t.paper;
     v.code_bg_color = t.paper;
     v.window_stroke = Stroke::new(BORDER, t.ink);
-    v.window_corner_radius = CornerRadius::ZERO;
-    v.menu_corner_radius = CornerRadius::ZERO;
-    let hard = Shadow {
+    v.window_corner_radius = r;
+    v.menu_corner_radius = r;
+    let mut shadow = Shadow {
         offset: [3, 3],
         blur: 0,
         spread: 0,
         color: t.ink,
     };
-    v.popup_shadow = hard;
-    v.window_shadow = hard;
+    if t.material {
+        // Menus sit on surfaceContainer at elevation 2: no border, a soft key shadow.
+        v.window_stroke = Stroke::NONE;
+        shadow = Shadow {
+            offset: [0, 2],
+            blur: 6,
+            spread: 0,
+            color: Color32::from_black_alpha(60),
+        };
+        v.handle_shape = HandleShape::Rect { aspect_ratio: 0.2 };
+    }
+    v.popup_shadow = shadow;
+    v.window_shadow = shadow;
     v.selection.bg_fill = t.accent; // also the filled part of slider rails
-    v.selection.stroke = Stroke::new(1.0, t.paper);
+    v.selection.stroke = Stroke::new(1.0, t.on_accent);
     v.hyperlink_color = t.ink;
     v.warn_fg_color = t.ink;
     v.error_fg_color = t.ink;
     v.text_cursor.stroke = Stroke::new(2.0, t.ink);
-    v.handle_shape = HandleShape::Rect { aspect_ratio: 0.55 };
+    if !t.material {
+        v.handle_shape = HandleShape::Rect { aspect_ratio: 0.55 };
+    }
     v.slider_trailing_fill = true;
     v.collapsing_header_frame = false;
     v.indent_has_left_vline = false;
 
-    let ink_line = Stroke::new(BORDER, t.ink);
+    let ink_line = if t.material {
+        Stroke::new(1.0, t.rule)
+    } else {
+        Stroke::new(BORDER, t.ink)
+    };
     let w = &mut v.widgets;
     // bg_fill paints slider rails and handles, weak_bg_fill paints buttons and combo boxes.
     for (wv, bg, weak, stroke, fg) in [
@@ -267,16 +332,27 @@ fn visuals(t: Tones, dark: bool) -> Visuals {
             Stroke::new(1.0, t.rule),
             t.ink,
         ),
-        (&mut w.inactive, t.rule, t.paper, ink_line, t.ink),
+        // Material: the slider's inactive track is the tonal container.
+        (
+            &mut w.inactive,
+            if t.material {
+                t.accent_container
+            } else {
+                t.rule
+            },
+            t.paper,
+            ink_line,
+            t.ink,
+        ),
         (&mut w.hovered, t.ink_soft, t.rule, ink_line, t.ink),
-        (&mut w.active, t.ink, t.ink, ink_line, t.paper),
+        (&mut w.active, t.accent, t.accent, ink_line, t.on_accent),
         (&mut w.open, t.rule, t.paper, ink_line, t.ink),
     ] {
         wv.bg_fill = bg;
         wv.weak_bg_fill = weak;
         wv.bg_stroke = stroke;
         wv.fg_stroke = Stroke::new(1.5, fg);
-        wv.corner_radius = CornerRadius::ZERO;
+        wv.corner_radius = r;
         wv.expansion = 0.0;
     }
     v
@@ -284,14 +360,15 @@ fn visuals(t: Tones, dark: bool) -> Visuals {
 
 fn to_egui_theme(mode: ThemeMode) -> egui::ThemePreference {
     match mode {
-        ThemeMode::System => egui::ThemePreference::System,
-        ThemeMode::Light | ThemeMode::Sumi => egui::ThemePreference::Light,
+        ThemeMode::System | ThemeMode::Material => egui::ThemePreference::System,
+        ThemeMode::Light => egui::ThemePreference::Light,
         ThemeMode::Dark => egui::ThemePreference::Dark,
     }
 }
 
 fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
-    install_fonts(ctx);
+    let material = mode == ThemeMode::Material;
+    install_fonts(ctx, material);
     // Follows the configured/system theme; TOUCHPADFLOW_THEME=light|dark pins one.
     let pref = match std::env::var("TOUCHPADFLOW_THEME").as_deref() {
         Ok("light") => egui::ThemePreference::Light,
@@ -299,14 +376,17 @@ fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
         _ => to_egui_theme(mode),
     };
     ctx.set_theme(pref);
-    let light = if mode == ThemeMode::Sumi {
-        Tones::SUMI
+    let (light_tones, dark_tones) = if material {
+        (Tones::M3_LIGHT, Tones::M3_DARK)
     } else {
-        Tones::LIGHT
+        (Tones::LIGHT, Tones::DARK)
     };
     for theme in [egui::Theme::Dark, egui::Theme::Light] {
         let dark = theme == egui::Theme::Dark;
-        ctx.set_visuals_of(theme, visuals(if dark { Tones::DARK } else { light }, dark));
+        ctx.set_visuals_of(
+            theme,
+            visuals(if dark { dark_tones } else { light_tones }, dark),
+        );
         ctx.style_mut_of(theme, |style| {
             use FontFamily::Proportional;
             style.text_styles = [
@@ -323,7 +403,8 @@ fn apply_theme(ctx: &egui::Context, mode: ThemeMode) {
             style.spacing.item_spacing = Vec2::new(10.0, 8.0);
             style.spacing.interact_size.y = 30.0;
             style.spacing.button_padding = Vec2::new(10.0, 5.0);
-            style.spacing.slider_rail_height = 4.0;
+            // Material's expressive slider has a thick rounded track.
+            style.spacing.slider_rail_height = if material { 12.0 } else { 4.0 };
         });
     }
 }
@@ -356,6 +437,8 @@ struct SettingsApp {
     engine: Arc<Mutex<Engine>>,
     recording_macro: Option<usize>,
     backdrop: Backdrop,
+    /// Linux desktop light/dark preference from the settings portal (None = unknown).
+    desktop_dark: Arc<Mutex<Option<bool>>>,
 }
 
 impl SettingsApp {
@@ -373,6 +456,9 @@ impl SettingsApp {
         apply_theme(ctx, cfg.theme);
         let engine = Arc::new(Mutex::new(Engine::Checking));
         spawn_status_poller(ctx.clone(), Arc::clone(&engine));
+        let desktop_dark = Arc::new(Mutex::new(None));
+        #[cfg(target_os = "linux")]
+        spawn_desktop_theme_poller(ctx.clone(), Arc::clone(&desktop_dark));
         Self {
             path,
             saved: cfg.clone(),
@@ -382,6 +468,7 @@ impl SettingsApp {
             engine,
             recording_macro: None,
             backdrop: Backdrop::default(),
+            desktop_dark,
         }
     }
 
@@ -480,6 +567,81 @@ fn launch_updater() -> Result<(), String> {
         last
     };
     spawned.map_err(|e| e.to_string())
+}
+
+/// winit cannot see the Linux desktop's light/dark preference, so ask the settings portal
+/// (KDE and GNOME both serve it) every 2 s and let System and Material follow it live.
+#[cfg(target_os = "linux")]
+fn spawn_desktop_theme_poller(ctx: egui::Context, slot: Arc<Mutex<Option<bool>>>) {
+    std::thread::spawn(move || {
+        loop {
+            let next = desktop_prefers_dark();
+            if let Ok(mut cur) = slot.lock()
+                && *cur != next
+            {
+                *cur = next;
+                ctx.request_repaint();
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
+}
+
+/// `org.freedesktop.appearance color-scheme` via busctl, else gdbus (no D-Bus crate needed).
+#[cfg(target_os = "linux")]
+fn desktop_prefers_dark() -> Option<bool> {
+    const DEST: &str = "org.freedesktop.portal.Desktop";
+    const PATH: &str = "/org/freedesktop/portal/desktop";
+    let tries: [(&str, &[&str]); 2] = [
+        (
+            "busctl",
+            &[
+                "--user",
+                "call",
+                DEST,
+                PATH,
+                "org.freedesktop.portal.Settings",
+                "ReadOne",
+                "ss",
+            ],
+        ),
+        (
+            "gdbus",
+            &[
+                "call",
+                "--session",
+                "--dest",
+                DEST,
+                "--object-path",
+                PATH,
+                "--method",
+                "org.freedesktop.portal.Settings.Read",
+            ],
+        ),
+    ];
+    tries.iter().find_map(|(bin, args)| {
+        let out = std::process::Command::new(bin)
+            .args(*args)
+            .args(["org.freedesktop.appearance", "color-scheme"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        parse_color_scheme(&String::from_utf8_lossy(&out.stdout))
+    })
+}
+
+/// Portal reply -> prefers dark. busctl prints `v u 1`, gdbus `(<<uint32 1>>,)`;
+/// 1 = dark, 2 = light, 0 = no preference.
+#[cfg(any(target_os = "linux", test))]
+fn parse_color_scheme(reply: &str) -> Option<bool> {
+    let value = reply
+        .split(|c: char| !c.is_ascii_digit())
+        .rfind(|s| !s.is_empty())?;
+    match value.parse::<u32>().ok()? {
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    }
 }
 
 fn spawn_status_poller(ctx: egui::Context, slot: Arc<Mutex<Engine>>) {
@@ -718,15 +880,19 @@ fn italic_galley(p: &Painter, text: &str, font: FontId, color: Color32) -> Arc<e
     p.layout_job(job)
 }
 
-/// Caption plate filled with `fill`, italic paper-coloured text.
+/// Caption plate filled with `fill` (a pill on Material), italic text.
 fn tag(ui: &mut Ui, text: &str, font: FontId, fill: Color32) {
     let t = Tones::ui(ui);
-    let galley = italic_galley(ui.painter(), text, font, t.paper);
+    let galley = italic_galley(ui.painter(), text, font, t.on_accent);
     let (rect, _) = ui.allocate_exact_size(galley.size() + Vec2::new(36.0, 12.0), Sense::hover());
     let r = rect.shrink2(Vec2::new(3.0, 2.0));
-    parallelogram(ui.painter(), r, 8.0, fill, Stroke::NONE);
+    if t.material {
+        ui.painter().rect_filled(r, r.height() / 2.0, fill); // pill
+    } else {
+        parallelogram(ui.painter(), r, 8.0, fill, Stroke::NONE);
+    }
     ui.painter()
-        .galley(r.center() - galley.size() / 2.0, galley, t.paper);
+        .galley(r.center() - galley.size() / 2.0, galley, t.on_accent);
 }
 
 // ---------------------------------------------------------------- ui
@@ -737,22 +903,42 @@ impl eframe::App for SettingsApp {
             self.save_now();
         }
         let before = self.cfg.clone();
-        let tones = if self.cfg.theme == ThemeMode::Sumi {
-            Tones::SUMI
-        } else {
-            Tones::of(ui.visuals().dark_mode)
+        // Linux: follow the desktop's light/dark (winit cannot report it) while the theme
+        // tracks the system. TOUCHPADFLOW_THEME still pins one.
+        if matches!(self.cfg.theme, ThemeMode::System | ThemeMode::Material)
+            && std::env::var_os("TOUCHPADFLOW_THEME").is_none()
+            && let Some(desktop_dark) = self.desktop_dark.lock().ok().and_then(|d| *d)
+        {
+            let want = if desktop_dark {
+                egui::ThemePreference::Dark
+            } else {
+                egui::ThemePreference::Light
+            };
+            if ui.ctx().options(|o| o.theme_preference) != want {
+                ui.ctx().set_theme(want);
+                ui.ctx().request_repaint();
+            }
+        }
+        let dark = ui.visuals().dark_mode;
+        let tones = match (self.cfg.theme, dark) {
+            (ThemeMode::Material, true) => Tones::M3_DARK,
+            (ThemeMode::Material, false) => Tones::M3_LIGHT,
+            _ => Tones::of(dark),
         };
         ui.data_mut(|d| d.insert_temp(egui::Id::NULL, tones));
 
         // One ink page behind both panels, fixed to the window so it never scrolls.
         let page = ui.ctx().content_rect();
-        if self.cfg.ink_page {
+        // Material keeps Material's plain surface; the ink page belongs to the print themes.
+        if self.cfg.ink_page && !tones.material {
             self.backdrop.paint(ui, page, tones);
         } else {
-            ui.painter().rect_filled(page, 0, tones.paper);
-            let border = Stroke::new(3.0, tones.ink);
-            ui.painter()
-                .rect_stroke(page, 0, border, StrokeKind::Inside);
+            ui.painter().rect_filled(page, 0, tones.bg);
+            if !tones.material {
+                let border = Stroke::new(3.0, tones.ink);
+                ui.painter()
+                    .rect_stroke(page, 0, border, StrokeKind::Inside);
+            }
         }
         let margin = egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 14));
 
@@ -769,9 +955,19 @@ impl eframe::App for SettingsApp {
                     touchpad_map(ui, &mut self.cfg);
                     ui.add_space(18.0);
                     ui.columns(2, |cols| {
-                        let ink = Stroke::new(2.0, Tones::ui(&cols[0]).ink);
-                        let paper = Tones::ui(&cols[0]).paper;
-                        let boxed = || egui::Frame::new().fill(paper).stroke(ink).inner_margin(8);
+                        let t = Tones::ui(&cols[0]);
+                        let ink = if t.material {
+                            Stroke::NONE // Material's filled card has no outline
+                        } else {
+                            Stroke::new(2.0, t.ink)
+                        };
+                        let boxed = || {
+                            egui::Frame::new()
+                                .fill(t.paper)
+                                .stroke(ink)
+                                .corner_radius(t.radius())
+                                .inner_margin(if t.material { 16 } else { 8 })
+                        };
                         boxed().show(&mut cols[0], |ui| {
                             section(ui, "02", "Left edge");
                             zone_controls(
@@ -825,8 +1021,17 @@ impl SettingsApp {
     fn header(&mut self, ui: &mut Ui) {
         let t = Tones::ui(ui);
         ui.horizontal(|ui| {
-            let ink = Tones::ui(ui).ink;
-            tag(ui, "TOUCHPADFLOW", FontId::new(28.0, display()), ink);
+            let t = Tones::ui(ui);
+            if t.material {
+                // Material: a headline in onSurface, no plate.
+                ui.label(
+                    egui::RichText::new("TouchpadFlow")
+                        .font(FontId::new(28.0, display()))
+                        .color(t.ink),
+                );
+            } else {
+                tag(ui, "TOUCHPADFLOW", FontId::new(28.0, display()), t.ink);
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.cfg.enabled {
@@ -841,6 +1046,17 @@ impl SettingsApp {
                 });
                 if resp.clicked() {
                     self.cfg.enabled = !self.cfg.enabled;
+                }
+                if ink_button(ui, "UPDATE", false)
+                    .on_hover_text("Download and install the latest release in a terminal window")
+                    .clicked()
+                {
+                    self.notice = Some(match launch_updater() {
+                        Ok(()) => Notice::Info(
+                            "Updater opened. Reopen TouchpadFlow when it finishes.".into(),
+                        ),
+                        Err(e) => Notice::Error(format!("Could not start the updater: {e}")),
+                    });
                 }
             });
         });
@@ -882,6 +1098,24 @@ impl SettingsApp {
             .size(11.5)
             .color(t.ink_soft),
         );
+        // App-scoped macros need the focused window; on KDE Wayland only kdotool can say.
+        if self
+            .cfg
+            .macros
+            .iter()
+            .any(|m| m.enabled && !m.apps.is_empty())
+            && kde_without_kdotool()
+        {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "Per-app macros need kdotool on KDE, which is not installed. Install it \
+                     (Fedora: sudo dnf install kdotool) or leave Apps empty to run everywhere.",
+                )
+                .size(11.5)
+                .color(t.ink),
+            );
+        }
         ui.add_space(6.0);
 
         if let Some(rec_idx) = self.recording_macro {
@@ -902,6 +1136,7 @@ impl SettingsApp {
             egui::Frame::new()
                 .stroke(Stroke::new(1.0, t.rule))
                 .fill(t.paper)
+                .corner_radius(t.radius())
                 .inner_margin(egui::Margin::same(10))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -985,7 +1220,7 @@ impl SettingsApp {
                                 ui.label(
                                     egui::RichText::new(format!("Invalid macro: {err}"))
                                         .size(11.0)
-                                        .color(t.paper),
+                                        .color(t.on_accent),
                                 );
                             });
                     }
@@ -1023,9 +1258,9 @@ impl SettingsApp {
                 (ThemeMode::Light, "LIGHT", "Black ink on grey paper"),
                 (ThemeMode::Dark, "DARK", "The same print in negative"),
                 (
-                    ThemeMode::Sumi,
-                    "SUMI",
-                    "Washi paper, sumi ink and a vermilion seal",
+                    ThemeMode::Material,
+                    "MATERIAL",
+                    "Material 3 in neutral greys: tonal surfaces, pill buttons, follows system light/dark",
                 ),
             ] {
                 let on = self.cfg.theme == mode;
@@ -1039,14 +1274,19 @@ impl SettingsApp {
         });
         ui.add_space(6.0);
         let label = if self.cfg.ink_page {
-            "INK PAGE  ON"
+            "BACKGROUND  ON"
         } else {
-            "INK PAGE  OFF"
+            "BACKGROUND  OFF"
         };
-        let resp = ink_button(ui, label, self.cfg.ink_page)
-            .on_hover_text("Drips, halftone and hatching behind the settings");
+        // Material keeps its plain surface, so the ink page toggle only applies to print.
+        let print = self.cfg.theme != ThemeMode::Material;
+        let resp = ui
+            .add_enabled_ui(print, |ui| ink_button(ui, label, self.cfg.ink_page))
+            .inner
+            .on_hover_text("Ink drips and halftone behind Light and Dark")
+            .on_disabled_hover_text("Material uses a plain surface");
         resp.widget_info(|| {
-            WidgetInfo::selected(Role::CheckBox, true, self.cfg.ink_page, "Ink page")
+            WidgetInfo::selected(Role::CheckBox, true, self.cfg.ink_page, "Background art")
         });
         if resp.clicked() {
             self.cfg.ink_page = !self.cfg.ink_page;
@@ -1054,9 +1294,11 @@ impl SettingsApp {
     }
 
     fn advanced(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new(
-            egui::RichText::new("05 / ADVANCED").font(FontId::new(12.0, strong())),
-        )
+        egui::CollapsingHeader::new(if Tones::ui(ui).material {
+            egui::RichText::new("Advanced").font(FontId::new(15.0, strong()))
+        } else {
+            egui::RichText::new("05 / ADVANCED").font(FontId::new(12.0, strong()))
+        })
         .show(ui, |ui| {
             egui::Grid::new("adv")
                 .num_columns(2)
@@ -1087,17 +1329,6 @@ impl SettingsApp {
         let t = Tones::ui(ui);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ink_button(ui, "UPDATE", false)
-                    .on_hover_text("Download and install the latest release in a terminal window")
-                    .clicked()
-                {
-                    self.notice = Some(match launch_updater() {
-                        Ok(()) => Notice::Info(
-                            "Updater opened. Reopen TouchpadFlow when it finishes.".into(),
-                        ),
-                        Err(e) => Notice::Error(format!("Could not start the updater: {e}")),
-                    });
-                }
                 if ink_button(ui, "RESET DEFAULTS", false)
                     .on_hover_text("Left = brightness, right = volume, 22% zones")
                     .clicked()
@@ -1115,7 +1346,7 @@ impl SettingsApp {
                                 .show(ui, |ui| {
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new(msg).color(t.paper).size(12.0),
+                                            egui::RichText::new(msg).color(t.on_accent).size(12.0),
                                         )
                                         .wrap(),
                                     );
@@ -1145,6 +1376,15 @@ impl SettingsApp {
 fn section(ui: &mut Ui, num: &str, title: &str) {
     let t = Tones::ui(ui);
     ui.horizontal(|ui| {
+        if t.material {
+            // Material: a title-small label in primary, no number, no rule.
+            ui.label(
+                egui::RichText::new(title)
+                    .font(FontId::new(15.0, strong()))
+                    .color(t.accent),
+            );
+            return;
+        }
         tag(
             ui,
             &format!("{num} / {}", title.to_uppercase()),
@@ -1158,38 +1398,101 @@ fn section(ui: &mut Ui, num: &str, title: &str) {
     ui.add_space(4.0);
 }
 
+/// True on KDE when `kdotool` cannot run (checked once per launch).
+fn kde_without_kdotool() -> bool {
+    static MISSING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MISSING.get_or_init(|| {
+        let kde = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .contains("KDE");
+        kde && std::process::Command::new("kdotool")
+            .arg("--version")
+            .output()
+            .is_err()
+    })
+}
+
+/// "GESTURES  ON" -> "Gestures on", "+ ADD MACRO" -> "+ Add macro" (Material's label case).
+fn sentence_case(text: &str) -> String {
+    let lower = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    match lower.char_indices().find(|(_, c)| c.is_alphabetic()) {
+        Some((i, c)) => format!(
+            "{}{}{}",
+            &lower[..i],
+            c.to_uppercase(),
+            &lower[i + c.len_utf8()..]
+        ),
+        None => lower,
+    }
+}
+
 /// Square button with a 2px ink border and a hard offset shadow; pressing sinks it.
 fn ink_button(ui: &mut Ui, text: &str, inverted: bool) -> Response {
     let t = Tones::ui(ui);
-    let font = FontId::new(13.0, strong());
+    // Material labels are sentence case ("Gestures on"); print labels stay capitals.
+    let label = if t.material {
+        sentence_case(text)
+    } else {
+        text.to_string()
+    };
+    let text = label.as_str();
+    let font = FontId::new(if t.material { 14.0 } else { 13.0 }, strong());
     let probe = ui
         .painter()
         .layout_no_wrap(text.into(), font.clone(), t.ink);
-    let body_size = probe.size() + Vec2::new(26.0, 14.0);
+    // Material buttons are 40 tall with 24 of side padding.
+    let pad = if t.material {
+        Vec2::new(48.0, 40.0 - probe.size().y)
+    } else {
+        Vec2::new(26.0, 14.0)
+    };
+    let body_size = probe.size() + pad;
     let (rect, resp) = ui.allocate_exact_size(body_size + Vec2::splat(OFFSET), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let pressed = resp.is_pointer_button_down_on();
     let mut body = Rect::from_min_size(rect.min, body_size);
     let p = ui.painter();
-    if pressed {
-        body = body.translate(Vec2::splat(OFFSET - 1.0));
-    } else {
-        p.rect_filled(body.translate(Vec2::splat(OFFSET)), 0, t.ink);
-    }
     let hovered = resp.hovered() && ui.is_enabled();
-    let (fill, fg) = match (inverted, hovered) {
-        (true, _) => (t.accent, t.paper),
-        (false, true) => (t.rule, t.ink),
-        (false, false) => (t.paper, t.ink),
-    };
-    p.rect_filled(body, 0, fill);
-    p.rect_stroke(body, 0, Stroke::new(BORDER, t.ink), StrokeKind::Inside);
+    let fg = if inverted { t.on_accent } else { t.ink };
+    if t.material {
+        // Material 3 button: a full pill, no border or shadow. Selected is filled primary,
+        // idle sits on surfaceContainer; hover and press lay the content colour over the
+        // container at 8% and 10% (Sung's state layers).
+        let radius = body.height() / 2.0;
+        let base = if inverted { t.accent } else { t.paper };
+        let layer = if pressed {
+            0.10
+        } else if hovered {
+            0.08
+        } else {
+            0.0
+        };
+        p.rect_filled(body, radius, base.lerp_to_gamma(fg, layer));
+    } else {
+        if pressed {
+            body = body.translate(Vec2::splat(OFFSET - 1.0));
+        } else {
+            p.rect_filled(body.translate(Vec2::splat(OFFSET)), 0, t.ink);
+        }
+        let fill = match (inverted, hovered) {
+            (true, _) => t.accent,
+            (false, true) => t.rule,
+            (false, false) => t.paper,
+        };
+        p.rect_filled(body, 0, fill);
+        p.rect_stroke(body, 0, Stroke::new(BORDER, t.ink), StrokeKind::Inside);
+    }
     let galley = p.layout_no_wrap(text.into(), font, fg);
     p.galley(body.center() - galley.size() / 2.0, galley, fg);
     if resp.has_focus() {
         p.rect_stroke(
             body.expand(3.0),
-            0,
+            t.radius(),
             Stroke::new(BORDER, t.ink),
             StrokeKind::Outside,
         );
@@ -1326,8 +1629,30 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
         };
         let on = action != EdgeAction::None && cfg.enabled;
         // Clean paper under the zone so its tone does not moire with the page halftone.
-        painter.rect_filled(zone, 0, t.paper);
-        if on {
+        // On Material the map is rounded, so each zone rounds its outer corners to match.
+        let (r, z) = (t.radius(), 0);
+        let zr = match (t.material, is_left) {
+            (false, _) => CornerRadius::ZERO,
+            (true, true) => CornerRadius {
+                nw: r,
+                sw: r,
+                ne: z,
+                se: z,
+            },
+            (true, false) => CornerRadius {
+                nw: z,
+                sw: z,
+                ne: r,
+                se: r,
+            },
+        };
+        painter.rect_filled(zone, zr, t.paper);
+        if t.material {
+            // Material: an active zone is the tonal primaryContainer, an idle one stays put.
+            if on {
+                painter.rect_filled(zone, zr, t.accent_container);
+            }
+        } else if on {
             screentone(&painter, zone, 7.0, 1.25, t.ink_soft);
         } else {
             screentone(&painter, zone, 11.0, 0.8, t.rule);
@@ -1354,20 +1679,26 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
             label.size() + Vec2::new(12.0, 6.0),
         );
         let (plate_fill, plate_text) = if on {
-            (t.ink, t.paper)
+            (if t.material { t.accent } else { t.ink }, t.on_accent)
         } else {
             (t.paper, t.ink_soft)
         };
-        painter.rect_filled(plate, 0, plate_fill);
+        let plate_r = if t.material {
+            plate.height() / 2.0
+        } else {
+            0.0
+        };
+        painter.rect_filled(plate, plate_r, plate_fill);
         if !on {
-            painter.rect_stroke(plate, 0, Stroke::new(1.0, t.rule), StrokeKind::Inside);
+            let s = Stroke::new(1.0, t.rule);
+            painter.rect_stroke(plate, plate_r, s, StrokeKind::Inside);
         }
         painter.galley(plate.min + Vec2::new(6.0, 3.0), label, plate_text);
         let pct_rect = Rect::from_center_size(
             plate.center_bottom() + Vec2::new(0.0, 14.0),
             pct.size() + Vec2::new(8.0, 2.0),
         );
-        painter.rect_filled(pct_rect, 0, t.paper);
+        painter.rect_filled(pct_rect, plate_r, t.paper);
         painter.galley(pct_rect.min + Vec2::new(4.0, 1.0), pct, t.ink);
 
         if on {
@@ -1405,20 +1736,30 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
         painter.vline(
             edge_x,
             pad.y_range(),
-            Stroke::new(if hot { 4.5 } else { 3.0 }, t.ink),
+            match (t.material, hot) {
+                // Material: an outline-variant divider that takes primary while dragged.
+                (true, true) => Stroke::new(2.0, t.accent),
+                (true, false) => Stroke::new(1.0, t.rule),
+                (false, true) => Stroke::new(4.5, t.ink),
+                (false, false) => Stroke::new(3.0, t.ink),
+            },
         );
-        // Grip: a small ink block on the line.
+        // Grip: a small ink block on the line (Material: a rounded primary handle).
         let grip = Rect::from_center_size(Pos2::new(edge_x, pad.center().y), Vec2::new(10.0, 28.0));
-        painter.rect_filled(grip, 0, t.ink);
+        if t.material {
+            painter.rect_filled(grip, 5.0, t.accent);
+        } else {
+            painter.rect_filled(grip, 0, t.ink);
+        }
         painter.hline(
             grip.x_range().shrink(2.5),
             grip.center().y - 4.0,
-            Stroke::new(1.0, t.paper),
+            Stroke::new(1.0, t.on_accent),
         );
         painter.hline(
             grip.x_range().shrink(2.5),
             grip.center().y + 4.0,
-            Stroke::new(1.0, t.paper),
+            Stroke::new(1.0, t.on_accent),
         );
     }
 
@@ -1444,7 +1785,12 @@ fn touchpad_map(ui: &mut Ui, cfg: &mut AppConfig) {
         FontId::new(11.0, strong()),
         t.ink_soft,
     );
-    painter.rect_stroke(pad, 0, Stroke::new(BORDER, t.ink), StrokeKind::Inside);
+    if t.material {
+        let r = t.radius();
+        painter.rect_stroke(pad, r, Stroke::new(1.0, t.rule), StrokeKind::Inside);
+    } else {
+        painter.rect_stroke(pad, 0, Stroke::new(BORDER, t.ink), StrokeKind::Inside);
+    }
 
     ui.label(
         egui::RichText::new(
@@ -1576,6 +1922,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn portal_color_scheme_replies_parse() {
+        assert_eq!(parse_color_scheme("v u 1\n"), Some(true));
+        assert_eq!(parse_color_scheme("v u 2\n"), Some(false));
+        assert_eq!(parse_color_scheme("v u 0\n"), None);
+        assert_eq!(parse_color_scheme("(<<uint32 1>>,)\n"), Some(true));
+        assert_eq!(parse_color_scheme("(<uint32 2>,)\n"), Some(false));
+        assert_eq!(parse_color_scheme(""), None);
+    }
+
+    #[test]
+    fn material_labels_are_sentence_case() {
+        assert_eq!(sentence_case("GESTURES  ON"), "Gestures on");
+        assert_eq!(sentence_case("+ ADD MACRO"), "+ Add macro");
+        assert_eq!(sentence_case("OFF"), "Off");
+        assert_eq!(sentence_case(""), "");
+    }
+
+    #[test]
     fn mac_agent_plist_round_trips_the_engine_path() {
         let engine = std::path::Path::new(
             "/Applications/TouchpadFlow.app/Contents/MacOS/touchpadflow-macos",
@@ -1625,6 +1989,9 @@ mod tests {
             egui::ThemePreference::Light
         );
         assert_eq!(to_egui_theme(ThemeMode::Dark), egui::ThemePreference::Dark);
-        assert_eq!(to_egui_theme(ThemeMode::Sumi), egui::ThemePreference::Light);
+        assert_eq!(
+            to_egui_theme(ThemeMode::Material),
+            egui::ThemePreference::System
+        );
     }
 }

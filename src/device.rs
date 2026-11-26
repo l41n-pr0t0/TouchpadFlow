@@ -78,6 +78,8 @@ pub struct VirtualOutput {
     pub keyboard: Option<VirtualDevice>,
     /// Reused per frame so forwarding never allocates in the event loop.
     scratch: Vec<InputEvent>,
+    /// Key taps a keyboard-less (dummy) output would have sent, for tests to inspect.
+    pub tapped: Vec<(Vec<KeyCode>, KeyCode)>,
 }
 
 impl VirtualOutput {
@@ -94,6 +96,7 @@ impl VirtualOutput {
             touchpad,
             keyboard: Some(keyboard),
             scratch: Vec::with_capacity(256),
+            tapped: Vec::new(),
         })
     }
 
@@ -103,6 +106,7 @@ impl VirtualOutput {
             touchpad: None,
             keyboard: None,
             scratch: Vec::new(),
+            tapped: Vec::new(),
         }
     }
 
@@ -239,6 +243,8 @@ impl VirtualOutput {
                 evs.push(syn);
             }
             kb.emit(&evs).map_err(AppError::Io)?;
+        } else {
+            self.tapped.push((modifiers.to_vec(), key));
         }
         Ok(())
     }

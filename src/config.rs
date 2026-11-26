@@ -20,8 +20,10 @@ pub enum ThemeMode {
     System,
     Light,
     Dark,
-    /// Washi paper, sumi ink and a vermilion seal accent.
-    Sumi,
+    /// Material 3 in neutral greys (tonal surfaces, pill controls), following system light/dark.
+    /// "glass" and "sumi" were earlier third themes and load as this one.
+    #[serde(alias = "glass", alias = "sumi")]
+    Material,
 }
 
 /// A custom gesture-to-action macro rule, optionally scoped to specific apps.
@@ -99,7 +101,8 @@ pub struct AppConfig {
     pub shortcuts: HashMap<String, String>,
 
     /// UI theme preference for the settings app.
-    #[serde(default)]
+    /// Unknown names (from a newer build) fall back to System instead of failing the load.
+    #[serde(default, deserialize_with = "lenient_theme")]
     pub theme: ThemeMode,
 
     /// Draw the ink page (drips, halftone, hatching) behind the settings app.
@@ -113,6 +116,11 @@ pub struct AppConfig {
 
 pub const EDGE_RATIO_RANGE: (f32, f32) = (0.05, 0.45);
 pub const SENSITIVITY_RANGE: (f64, f64) = (0.2, 4.0);
+
+fn lenient_theme<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ThemeMode, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(v).unwrap_or_default())
+}
 
 fn default_true() -> bool {
     true
@@ -262,6 +270,10 @@ mod tests {
         assert_eq!(c.right_action, EdgeAction::Volume);
         assert_eq!(c.theme, ThemeMode::System);
         assert!(c.ink_page);
+        let c: AppConfig = serde_json::from_str(r#"{"theme":"sumi"}"#).unwrap();
+        assert_eq!(c.theme, ThemeMode::Material);
+        let c: AppConfig = serde_json::from_str(r#"{"theme":"from-the-future"}"#).unwrap();
+        assert_eq!(c.theme, ThemeMode::System);
     }
 
     #[test]
