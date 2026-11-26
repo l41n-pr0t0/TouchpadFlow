@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/hero.png" alt="The TouchpadFlow settings app, in light and dark mode" width="100%">
+  <img src="docs/images/hero.png" alt="The TouchpadFlow settings app: the Light ink theme beside the Material theme in dark mode" width="100%">
 </p>
 
 <h1 align="center">TouchpadFlow</h1>
@@ -44,7 +44,7 @@ Prefer a normal installer? Grab it from the [**releases page**](https://github.c
 - **macOS:** `TouchpadFlow-macos-universal.dmg`. Drag **TouchpadFlow** to Applications and open it once; it starts the engine at every login from then on.
   The build is not notarized, so the first time right-click the app → **Open** (or run `xattr -dr com.apple.quarantine /Applications/TouchpadFlow.app`).
 
-Already installed? The **UPDATE** button in the app installs the latest release for you.
+Already installed? The **Update** button at the top right of the app installs the latest release for you.
 
 ---
 
@@ -76,7 +76,9 @@ Open **TouchpadFlow** from your app menu. Changes apply the moment you make them
 | **Touchpad map** | Drag a line to make a zone wider or narrower (5–45% of the pad). |
 | **Controls** | Choose what each edge changes: *Brightness*, *Volume*, or *Nothing*. |
 | **Sensitivity** | How much one full top-to-bottom slide changes the value. |
+| **Macros** | Bind three- and four-finger gestures to key combos or commands, for every app or only some. See [Macros](#macros). |
 | **Advanced** | A small dead zone so resting fingers don't nudge values, and how long an edge touch waits for a second finger. |
+| **Look** | *System*, *Light*, *Dark* or *Material*, and **Background** to switch the ink page off. |
 
 <table>
   <tr>
@@ -84,12 +86,12 @@ Open **TouchpadFlow** from your app menu. Changes apply the moment you make them
     <td width="50%"><img src="docs/images/app-off.png" alt="Gestures switched off, dark mode"></td>
   </tr>
   <tr>
-    <td align="center"><sub>Left edge set to volume, right edge turned off</sub></td>
-    <td align="center"><sub>Gestures off, in dark mode</sub></td>
+    <td align="center"><sub>Material theme: left edge set to volume with a wider zone, right edge off</sub></td>
+    <td align="center"><sub>Gestures off, Dark theme</sub></td>
   </tr>
 </table>
 
-The app follows your system's light or dark theme.
+**Themes.** *Light* and *Dark* are black ink on paper, with an ink page behind them (drips, halftone, hatching) that **Background** turns off. *Material* is Material 3 in neutral greys, with rounded cards and pill buttons. *System* and *Material* follow your desktop's light or dark setting, on Linux too.
 
 ---
 
@@ -101,6 +103,20 @@ The app follows your system's light or dark theme.
 | Three-finger swipe left / right | Previous / next track |
 | Four-finger swipe up / down | Overview / show desktop *(KDE Plasma)* |
 | Four-finger swipe left / right | Previous / next virtual desktop *(KDE Plasma)* |
+
+---
+
+## Macros
+
+Bind any three- or four-finger swipe or tap to a key combo (`ctrl+tab`), a sequence (`ctrl+l, enter`) or a command (`command:...`). Use **Rec** to record a combo by pressing it.
+
+**Scroll through browser tabs:** bind *Three-finger swipe right* to `ctrl+tab` and *Three-finger swipe left* to `ctrl+shift+tab`. A macro swipe keeps firing as you keep sliding, so one long slide moves through several tabs, and sliding back goes the other way.
+
+<p align="center">
+  <img src="docs/images/app-macros.png" alt="Two macros: three-finger swipe right sends ctrl+tab, swipe left sends ctrl+shift+tab" width="560">
+</p>
+
+Put app names in **Apps** (for example `firefox`) to limit a macro to those windows; leave it empty to run everywhere. On KDE Plasma, per-app macros need `kdotool` (`sudo dnf install kdotool` on Fedora); the app tells you if it is missing.
 
 ---
 
